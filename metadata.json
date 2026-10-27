@@ -1,0 +1,8 @@
+{
+  "name": "Smart Tech",
+  "description": "Futuristic Technology Education Platform providing students with structured educational notes, past examination papers, scheduled Google Forms online examinations, announcements, and personalized dashboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

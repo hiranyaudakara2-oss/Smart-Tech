@@ -1,0 +1,42 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Default deny all unmatched storage paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'hiranyaudakara2@gmail.com' ||
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidPdfUpload() {
+      return request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 25 * 1024 * 1024 &&
+        request.resource.contentType == 'application/pdf';
+    }
+
+    // Educational Notes PDFs
+    match /notes/{fileName} {
+      allow read: if fileName.size() <= 200;
+      allow create, update: if isAdmin() && fileName.size() <= 200 && fileName.matches('^[a-zA-Z0-9_\\-\\.]+\\.pdf$') && isValidPdfUpload();
+      allow delete: if isAdmin();
+    }
+
+    // Past Examination Papers PDFs
+    match /papers/{fileName} {
+      allow read: if fileName.size() <= 200;
+      allow create, update: if isAdmin() && fileName.size() <= 200 && fileName.matches('^[a-zA-Z0-9_\\-\\.]+\\.pdf$') && isValidPdfUpload();
+      allow delete: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,970 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4.1: Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Phase 3: Hardened Global Primitives
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'hiranyaudakara2@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Pillar 2: Anti-Update-Gap & Blueprint Sync)
+    // =========================================================================
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'role', 'createdAt', 'lastLoginAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'grade', 'createdAt', 'lastLoginAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.photoURL is string && data.photoURL.size() <= 1024 &&
+        data.role is string && data.role.size() <= 16 && (data.role == 'student' || data.role == 'admin') &&
+        (!('grade' in data) || (data.grade is string && data.grade.size() <= 40)) &&
+        data.createdAt is timestamp &&
+        data.lastLoginAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRole(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128 && data.grantedBy.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.grantedBy == request.auth.uid &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidPlatformStats(data) {
+      return data.keys().hasAll(['totalUsers', 'totalNotes', 'totalPapers', 'totalPdfs', 'totalExams', 'updatedAt']) &&
+        data.keys().hasOnly(['totalUsers', 'totalNotes', 'totalPapers', 'totalPdfs', 'totalExams', 'completedAttempts', 'publishedResults', 'updatedAt']) &&
+        data.totalUsers is int && data.totalUsers >= 0 &&
+        data.totalNotes is int && data.totalNotes >= 0 &&
+        data.totalPapers is int && data.totalPapers >= 0 &&
+        data.totalPdfs is int && data.totalPdfs >= 0 &&
+        data.totalExams is int && data.totalExams >= 0 &&
+        (!('completedAttempts' in data) || (data.completedAttempts is int && data.completedAttempts >= 0)) &&
+        (!('publishedResults' in data) || (data.publishedResults is int && data.publishedResults >= 0)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNoteResource(data) {
+      return data.keys().hasAll(['title', 'subject', 'grade', 'description', 'pdfUrl', 'storagePath', 'fileName', 'fileSize', 'thumbnailUrl', 'published', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['title', 'subject', 'grade', 'description', 'tags', 'sourceType', 'driveUrl', 'pdfUrl', 'storagePath', 'fileName', 'fileSize', 'thumbnailUrl', 'published', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 80 &&
+        data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 40 &&
+        data.description is string && data.description.size() >= 4 && data.description.size() <= 2000 &&
+        (!('tags' in data) || (data.tags is list && data.tags.size() <= 10 && (data.tags.size() == 0 || (data.tags[0] is string && data.tags[0].size() <= 32)))) &&
+        (!('sourceType' in data) || (data.sourceType is string && data.sourceType.size() <= 16 && (data.sourceType == 'drive' || data.sourceType == 'pdf'))) &&
+        (!('driveUrl' in data) || (data.driveUrl is string && data.driveUrl.size() <= 1500 && (data.driveUrl == '' || data.driveUrl.matches('^https://(drive\\.google\\.com|docs\\.google\\.com)/.+')))) &&
+        (!('sourceType' in data) || data.sourceType != 'drive' || ('driveUrl' in data && data.driveUrl.size() >= 16)) &&
+        data.pdfUrl is string && data.pdfUrl.size() >= 5 && data.pdfUrl.size() <= 1500 &&
+        data.storagePath is string && data.storagePath.size() <= 500 &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 200 &&
+        data.fileSize is int && data.fileSize >= 0 && data.fileSize <= 52428800 &&
+        data.thumbnailUrl is string && data.thumbnailUrl.size() <= 1000 &&
+        data.published is bool &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExamPaper(data) {
+      return data.keys().hasAll(['title', 'subject', 'year', 'grade', 'examType', 'language', 'description', 'fileFormat', 'pdfUrl', 'storagePath', 'fileName', 'fileSize', 'published', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['title', 'subject', 'category', 'year', 'grade', 'examType', 'language', 'description', 'fileFormat', 'sourceType', 'driveUrl', 'pdfUrl', 'storagePath', 'fileName', 'fileSize', 'published', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 80 &&
+        (!('category' in data) || (data.category is string && data.category.size() <= 60)) &&
+        data.year is int && data.year >= 1990 && data.year <= 2100 &&
+        data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 40 &&
+        data.examType is string && data.examType.size() >= 2 && data.examType.size() <= 60 &&
+        data.language is string && data.language.size() >= 2 && data.language.size() <= 40 &&
+        data.description is string && data.description.size() <= 1500 &&
+        data.fileFormat is string && data.fileFormat.size() <= 10 && data.fileFormat == 'PDF' &&
+        (!('sourceType' in data) || (data.sourceType is string && data.sourceType.size() <= 16 && (data.sourceType == 'drive' || data.sourceType == 'pdf'))) &&
+        (!('driveUrl' in data) || (data.driveUrl is string && data.driveUrl.size() <= 1500 && (data.driveUrl == '' || data.driveUrl.matches('^https://(drive\\.google\\.com|docs\\.google\\.com)/.+')))) &&
+        (!('sourceType' in data) || data.sourceType != 'drive' || ('driveUrl' in data && data.driveUrl.size() >= 16)) &&
+        data.pdfUrl is string && data.pdfUrl.size() >= 5 && data.pdfUrl.size() <= 1500 &&
+        data.storagePath is string && data.storagePath.size() <= 500 &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 200 &&
+        data.fileSize is int && data.fileSize >= 0 && data.fileSize <= 52428800 &&
+        data.published is bool &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOnlineExam(data) {
+      return data.keys().hasAll(['title', 'subject', 'grade', 'description', 'instructions', 'opensAt', 'closesAt', 'timezone', 'published', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'title', 'subject', 'grade', 'description', 'instructions',
+          'opensAt', 'closesAt', 'timezone',
+          'examMode', 'durationMinutes', 'totalMarks', 'passingMarks', 'maxAttempts',
+          'questionCount', 'questions', 'showExplanations',
+          'resultsPublished', 'rankBoardPublished', 'anonymizeRankBoard', 'accessCodeProtected',
+          'published', 'authorId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 80 &&
+        data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 40 &&
+        data.description is string && data.description.size() >= 4 && data.description.size() <= 2000 &&
+        data.instructions is string && data.instructions.size() >= 4 && data.instructions.size() <= 2000 &&
+        data.opensAt is timestamp &&
+        data.closesAt is timestamp &&
+        data.closesAt > data.opensAt &&
+        data.timezone is string && data.timezone.size() <= 40 && data.timezone == 'Asia/Colombo' &&
+        (!('examMode' in data) || (data.examMode is string && data.examMode.size() <= 20 && (data.examMode == 'native' || data.examMode == 'google_form'))) &&
+        (!('durationMinutes' in data) || (data.durationMinutes is int && data.durationMinutes >= 1 && data.durationMinutes <= 360)) &&
+        (!('totalMarks' in data) || (data.totalMarks is int && data.totalMarks >= 0 && data.totalMarks <= 5000)) &&
+        (!('passingMarks' in data) || (data.passingMarks is int && data.passingMarks >= 0 && data.passingMarks <= 5000)) &&
+        (!('maxAttempts' in data) || (data.maxAttempts is int && data.maxAttempts >= 1 && data.maxAttempts <= 10)) &&
+        (!('questionCount' in data) || (data.questionCount is int && data.questionCount >= 0 && data.questionCount <= 50)) &&
+        (!('questions' in data) || (
+          data.questions is list &&
+          data.questions.size() <= 50 &&
+          (data.questions.size() == 0 || (
+            data.questions[0] is map &&
+            data.questions[0].keys().hasOnly(['id', 'type', 'prompt', 'options', 'marks'])
+          ))
+        )) &&
+        (!('showExplanations' in data) || data.showExplanations is bool) &&
+        (!('resultsPublished' in data) || data.resultsPublished is bool) &&
+        (!('rankBoardPublished' in data) || data.rankBoardPublished is bool) &&
+        (!('anonymizeRankBoard' in data) || data.anonymizeRankBoard is bool) &&
+        (!('accessCodeProtected' in data) || data.accessCodeProtected is bool) &&
+        data.published is bool &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExamSecretLink(data) {
+      return data.keys().hasAll(['examId', 'formUrl', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['examId', 'formUrl', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.examId is string && data.examId.size() >= 1 && data.examId.size() <= 128 && data.examId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.formUrl is string && data.formUrl.size() >= 24 && data.formUrl.size() <= 1500 &&
+        data.formUrl.matches('^https://(docs\\.google\\.com/forms/|forms\\.gle/).+') &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExamSealedConfig(data) {
+      return data.keys().hasAll(['examId', 'codeMac', 'sealedAccessCode', 'codeRevoked', 'sealedAnswerKey', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['examId', 'codeMac', 'sealedAccessCode', 'codeRevoked', 'sealedAnswerKey', 'authorId', 'createdAt', 'updatedAt']) &&
+        data.examId is string && data.examId.size() >= 1 && data.examId.size() <= 128 && data.examId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.codeMac is string && data.codeMac.size() >= 64 && data.codeMac.size() <= 128 &&
+        data.sealedAccessCode is string && data.sealedAccessCode.size() >= 16 && data.sealedAccessCode.size() <= 512 &&
+        data.codeRevoked is bool &&
+        data.sealedAnswerKey is string && data.sealedAnswerKey.size() >= 16 && data.sealedAnswerKey.size() <= 60000 &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExamAttempt(data) {
+      return data.keys().hasAll([
+          'examId', 'examTitle', 'subject', 'userId', 'studentName', 'studentEmail',
+          'attemptNumber', 'status', 'answers', 'marksObtained', 'totalMarks',
+          'percentage', 'passed', 'resultsPublished', 'reviewBreakdown', 'serverReceipt',
+          'startedAt', 'expiresAt', 'submittedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'examId', 'examTitle', 'subject', 'userId', 'studentName', 'studentEmail',
+          'attemptNumber', 'status', 'answers', 'marksObtained', 'totalMarks',
+          'percentage', 'passed', 'resultsPublished', 'reviewBreakdown', 'serverReceipt',
+          'startedAt', 'expiresAt', 'submittedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.examId is string && data.examId.size() >= 1 && data.examId.size() <= 128 && data.examId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.examTitle is string && data.examTitle.size() >= 2 && data.examTitle.size() <= 160 &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 80 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100 &&
+        data.studentEmail is string && data.studentEmail.size() >= 3 && data.studentEmail.size() <= 254 &&
+        data.attemptNumber is int && data.attemptNumber >= 1 && data.attemptNumber <= 10 &&
+        data.status is string && data.status.size() <= 20 &&
+        (data.status == 'in_progress' || data.status == 'pending_review' || data.status == 'graded') &&
+        data.answers is map && data.answers.size() <= 50 &&
+        data.marksObtained is int && data.marksObtained >= 0 && data.marksObtained <= 5000 &&
+        data.totalMarks is int && data.totalMarks >= 1 && data.totalMarks <= 5000 &&
+        data.percentage is int && data.percentage >= 0 && data.percentage <= 100 &&
+        data.passed is bool &&
+        data.resultsPublished is bool &&
+        data.reviewBreakdown is list && data.reviewBreakdown.size() <= 50 &&
+        (data.reviewBreakdown.size() == 0 || data.reviewBreakdown[0] is map) &&
+        data.serverReceipt is string && data.serverReceipt.size() <= 128 &&
+        data.startedAt is timestamp &&
+        data.expiresAt is timestamp &&
+        data.submittedAt is timestamp &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRankBoardEntry(data) {
+      return data.keys().hasAll([
+          'examId', 'examTitle', 'subject', 'attemptId', 'rankPosition',
+          'studentDisplayName', 'anonymizedCode', 'anonymizeNames',
+          'marksObtained', 'totalMarks', 'percentage', 'passed',
+          'isFinalized', 'published', 'serverReceipt', 'authorId',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'examId', 'examTitle', 'subject', 'attemptId', 'rankPosition',
+          'studentDisplayName', 'anonymizedCode', 'anonymizeNames',
+          'marksObtained', 'totalMarks', 'percentage', 'passed',
+          'isFinalized', 'published', 'serverReceipt', 'authorId',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.examId is string && data.examId.size() >= 1 && data.examId.size() <= 128 && data.examId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.examTitle is string && data.examTitle.size() >= 2 && data.examTitle.size() <= 160 &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 80 &&
+        data.attemptId is string && data.attemptId.size() >= 1 && data.attemptId.size() <= 128 && data.attemptId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.rankPosition is int && data.rankPosition >= 1 && data.rankPosition <= 100000 &&
+        data.studentDisplayName is string && data.studentDisplayName.size() >= 1 && data.studentDisplayName.size() <= 100 &&
+        data.anonymizedCode is string && data.anonymizedCode.size() >= 4 && data.anonymizedCode.size() <= 24 &&
+        data.anonymizeNames is bool &&
+        data.marksObtained is int && data.marksObtained >= 0 && data.marksObtained <= 5000 &&
+        data.totalMarks is int && data.totalMarks >= 1 && data.totalMarks <= 5000 &&
+        data.percentage is int && data.percentage >= 0 && data.percentage <= 100 &&
+        data.passed is bool &&
+        data.isFinalized is bool &&
+        data.published is bool &&
+        data.serverReceipt is string && data.serverReceipt.size() >= 16 && data.serverReceipt.size() <= 128 &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['title', 'body', 'category', 'priority', 'published', 'authorId', 'authorName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'title', 'body', 'category', 'priority',
+          'isImportant', 'imageUrl', 'publishedAt',
+          'published', 'authorId', 'authorName', 'createdAt', 'updatedAt'
+        ]) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
+        data.body is string && data.body.size() >= 4 && data.body.size() <= 3000 &&
+        data.category is string && data.category.size() <= 40 &&
+        (data.category == 'General Notice' || data.category == 'Exam Notice' || data.category == 'New Upload' || data.category == 'Important Announcement') &&
+        data.priority is string && data.priority.size() <= 20 &&
+        (data.priority == 'normal' || data.priority == 'high' || data.priority == 'urgent') &&
+        (!('isImportant' in data) || data.isImportant is bool) &&
+        (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 1500)) &&
+        (!('publishedAt' in data) || data.publishedAt is timestamp) &&
+        data.published is bool &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserActivity(data) {
+      return data.keys().hasAll(['userId', 'resourceId', 'resourceType', 'resourceTitle', 'subject', 'action', 'createdAt']) &&
+        data.keys().hasOnly(['userId', 'resourceId', 'resourceType', 'resourceTitle', 'subject', 'action', 'createdAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId == request.auth.uid &&
+        data.resourceId is string && data.resourceId.size() >= 1 && data.resourceId.size() <= 128 && data.resourceId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.resourceType is string && data.resourceType.size() <= 20 &&
+        (data.resourceType == 'note' || data.resourceType == 'paper' || data.resourceType == 'exam') &&
+        data.resourceTitle is string && data.resourceTitle.size() >= 1 && data.resourceTitle.size() <= 160 &&
+        data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80 &&
+        data.action is string && data.action.size() <= 20 &&
+        (data.action == 'viewed' || data.action == 'downloaded' || data.action == 'opened_exam' || data.action == 'submitted_exam') &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAnnouncementRead(data) {
+      return data.keys().hasAll(['userId', 'announcementId', 'readAt']) &&
+        data.keys().hasOnly(['userId', 'announcementId', 'readAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId == request.auth.uid &&
+        data.announcementId is string && data.announcementId.size() >= 1 && data.announcementId.size() <= 128 && data.announcementId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.readAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorUid', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
+        data.keys().hasOnly(['actorUid', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
+        data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 && data.actorUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.actorUid == request.auth.uid &&
+        data.actorEmail is string && data.actorEmail.size() >= 3 && data.actorEmail.size() <= 254 &&
+        data.action is string && data.action.size() >= 2 && data.action.size() <= 80 &&
+        data.targetType is string && data.targetType.size() <= 30 &&
+        (
+          data.targetType == 'note' ||
+          data.targetType == 'paper' ||
+          data.targetType == 'exam' ||
+          data.targetType == 'announcement' ||
+          data.targetType == 'user' ||
+          data.targetType == 'admin' ||
+          data.targetType == 'stats' ||
+          data.targetType == 'result' ||
+          data.targetType == 'rankboard' ||
+          data.targetType == 'settings'
+        ) &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 && data.targetId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.summary is string && data.summary.size() >= 2 && data.summary.size() <= 500 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidCustomRankBoard(data) {
+      return data.keys().hasAll([
+          'title', 'category', 'subject', 'targetGroup', 'description',
+          'rankingMode', 'linkedItemType', 'linkedItemId', 'linkedItemTitle',
+          'published', 'authorId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'title', 'category', 'subject', 'targetGroup', 'description',
+          'rankingMode', 'linkedItemType', 'linkedItemId', 'linkedItemTitle',
+          'published', 'authorId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
+        data.category is string && data.category.size() <= 30 &&
+        (
+          data.category == 'Subject' ||
+          data.category == 'Examination' ||
+          data.category == 'Past Paper' ||
+          data.category == 'Class' ||
+          data.category == 'Competition'
+        ) &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 80 &&
+        data.targetGroup is string && data.targetGroup.size() <= 80 &&
+        data.description is string && data.description.size() <= 1000 &&
+        data.rankingMode is string && data.rankingMode.size() <= 16 &&
+        (data.rankingMode == 'auto' || data.rankingMode == 'manual') &&
+        data.linkedItemType is string && data.linkedItemType.size() <= 16 &&
+        (
+          data.linkedItemType == 'none' ||
+          data.linkedItemType == 'paper' ||
+          data.linkedItemType == 'exam' ||
+          data.linkedItemType == 'note'
+        ) &&
+        data.linkedItemId is string && data.linkedItemId.size() <= 128 &&
+        (data.linkedItemId == '' || data.linkedItemId.matches('^[a-zA-Z0-9_\\-]+$')) &&
+        data.linkedItemTitle is string && data.linkedItemTitle.size() <= 160 &&
+        data.published is bool &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCustomRankEntry(data) {
+      return data.keys().hasAll([
+          'boardId', 'boardTitle', 'boardCategory', 'boardPublished',
+          'studentName', 'marks', 'maxMarks', 'percentage',
+          'rankPosition', 'isManualRank', 'displayOrder', 'subject',
+          'linkedItemType', 'linkedItemId', 'linkedItemTitle',
+          'authorId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'boardId', 'boardTitle', 'boardCategory', 'boardPublished',
+          'studentName', 'marks', 'maxMarks', 'percentage',
+          'rankPosition', 'isManualRank', 'displayOrder', 'subject',
+          'linkedItemType', 'linkedItemId', 'linkedItemTitle',
+          'authorId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.boardId is string && data.boardId.size() >= 1 && data.boardId.size() <= 128 && data.boardId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.boardTitle is string && data.boardTitle.size() >= 2 && data.boardTitle.size() <= 160 &&
+        data.boardCategory is string && data.boardCategory.size() <= 30 &&
+        (
+          data.boardCategory == 'Subject' ||
+          data.boardCategory == 'Examination' ||
+          data.boardCategory == 'Past Paper' ||
+          data.boardCategory == 'Class' ||
+          data.boardCategory == 'Competition'
+        ) &&
+        data.boardPublished is bool &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100 &&
+        (data.marks is int || data.marks is float) && data.marks >= 0 && data.marks <= 10000 &&
+        (data.maxMarks is int || data.maxMarks is float) && data.maxMarks >= 1 && data.maxMarks <= 10000 &&
+        data.marks <= data.maxMarks &&
+        data.percentage is int && data.percentage >= 0 && data.percentage <= 100 &&
+        data.rankPosition is int && data.rankPosition >= 1 && data.rankPosition <= 100000 &&
+        data.isManualRank is bool &&
+        data.displayOrder is int && data.displayOrder >= 0 && data.displayOrder <= 100000 &&
+        data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 120 &&
+        data.linkedItemType is string && data.linkedItemType.size() <= 16 &&
+        (
+          data.linkedItemType == 'none' ||
+          data.linkedItemType == 'paper' ||
+          data.linkedItemType == 'exam' ||
+          data.linkedItemType == 'note'
+        ) &&
+        data.linkedItemId is string && data.linkedItemId.size() <= 128 &&
+        (data.linkedItemId == '' || data.linkedItemId.matches('^[a-zA-Z0-9_\\-]+$')) &&
+        data.linkedItemTitle is string && data.linkedItemTitle.size() <= 160 &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Match Blocks (All 16 Blueprint Collections)
+    // =========================================================================
+
+    // 1. /users/{userId} — PII-isolated User Profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && existing().uid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().lastLoginAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            isOwner(userId) &&
+            incoming().email == request.auth.token.email &&
+            (incoming().role == 'student' || (incoming().role == 'admin' && isAdmin()))
+          ) ||
+          isAdmin()
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            isOwner(userId) &&
+            incoming().email == existing().email &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'grade', 'lastLoginAt', 'updatedAt'])
+          ) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // 2. /admins/{adminId} — Trusted Administrator UID Registry
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && existing().uid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(adminId) &&
+        isValidAdminRole(incoming()) &&
+        incoming().uid == adminId &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+
+      allow update: if false;
+      allow delete: if isValidId(adminId) && isAdmin();
+    }
+
+    // 3. /stats/{statId} — Singleton Platform Statistics Counter (/stats/platform)
+    match /stats/{statId} {
+      allow get: if statId == 'platform';
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        statId == 'platform' &&
+        isValidPlatformStats(incoming()) &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            !exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            incoming().totalUsers == 1 &&
+            incoming().totalNotes == 0 &&
+            incoming().totalPapers == 0 &&
+            incoming().totalPdfs == 0 &&
+            incoming().totalExams == 0
+          )
+        );
+
+      allow update: if isVerifiedUser() &&
+        statId == 'platform' &&
+        isValidPlatformStats(incoming()) &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            !exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['totalUsers', 'updatedAt']) &&
+            incoming().totalUsers == existing().totalUsers + 1
+          ) ||
+          isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 4. /notes/{noteId} — Educational Notes Library (Google Drive Link or PDF)
+    match /notes/{noteId} {
+      allow get: if isValidId(noteId) && ((resource != null && existing().published == true) || isAdmin());
+      allow list: if existing().published == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(noteId) &&
+        isValidNoteResource(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(noteId) &&
+        isValidNoteResource(incoming()) &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['published', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'subject', 'grade', 'description', 'tags',
+            'sourceType', 'driveUrl', 'pdfUrl', 'storagePath', 'fileName', 'fileSize',
+            'thumbnailUrl', 'published', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(noteId) && isAdmin();
+    }
+
+    // 5. /papers/{paperId} — Past Examination Papers Archive (Google Drive Link or PDF)
+    match /papers/{paperId} {
+      allow get: if isValidId(paperId) && ((resource != null && existing().published == true) || isAdmin());
+      allow list: if existing().published == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(paperId) &&
+        isValidExamPaper(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(paperId) &&
+        isValidExamPaper(incoming()) &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['published', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'subject', 'category', 'year', 'grade', 'examType', 'language', 'description',
+            'sourceType', 'driveUrl', 'pdfUrl', 'storagePath', 'fileName', 'fileSize',
+            'published', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(paperId) && isAdmin();
+    }
+
+    // 6. /exams/{examId} — Scheduled Online Examinations Metadata & Public Questions
+    match /exams/{examId} {
+      allow get: if isValidId(examId) && ((resource != null && existing().published == true) || isAdmin());
+      allow list: if existing().published == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(examId) &&
+        isValidOnlineExam(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          existsAfter(/databases/$(database)/documents/examLinks/$(examId)) ||
+          existsAfter(/databases/$(database)/documents/examConfigs/$(examId))
+        ) &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(examId) &&
+        isValidOnlineExam(incoming()) &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['published', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['resultsPublished', 'rankBoardPublished', 'anonymizeRankBoard', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'subject', 'grade', 'description', 'instructions',
+            'opensAt', 'closesAt', 'examMode', 'durationMinutes', 'totalMarks',
+            'passingMarks', 'maxAttempts', 'questionCount', 'questions',
+            'showExplanations', 'resultsPublished', 'rankBoardPublished',
+            'anonymizeRankBoard', 'accessCodeProtected', 'published', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(examId) && isAdmin();
+    }
+
+    // 7. /examLinks/{examId} — Server-Time-Locked Google Forms URLs
+    match /examLinks/{examId} {
+      allow get: if isValidId(examId) && (
+        isAdmin() ||
+        (
+          exists(/databases/$(database)/documents/exams/$(examId)) &&
+          get(/databases/$(database)/documents/exams/$(examId)).data.published == true &&
+          request.time >= get(/databases/$(database)/documents/exams/$(examId)).data.opensAt &&
+          request.time < get(/databases/$(database)/documents/exams/$(examId)).data.closesAt
+        )
+      );
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(examId) &&
+        isValidExamSecretLink(incoming()) &&
+        incoming().examId == examId &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/exams/$(examId)) &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(examId) &&
+        isValidExamSecretLink(incoming()) &&
+        incoming().examId == existing().examId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/exams/$(examId)) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['formUrl', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isValidId(examId) && isAdmin();
+    }
+
+    // 8. /examConfigs/{examId} — Server-Encrypted AES-256-GCM Answer Keys & 6-Digit Password Verifiers
+    match /examConfigs/{examId} {
+      allow get: if isValidId(examId) && (
+        isAdmin() ||
+        (
+          isVerifiedUser() &&
+          exists(/databases/$(database)/documents/exams/$(examId)) &&
+          get(/databases/$(database)/documents/exams/$(examId)).data.published == true &&
+          request.time >= get(/databases/$(database)/documents/exams/$(examId)).data.opensAt
+        )
+      );
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(examId) &&
+        isValidExamSealedConfig(incoming()) &&
+        incoming().examId == examId &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/exams/$(examId)) &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(examId) &&
+        isValidExamSealedConfig(incoming()) &&
+        incoming().examId == existing().examId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/exams/$(examId)) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['codeMac', 'sealedAccessCode', 'codeRevoked', 'sealedAnswerKey', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isValidId(examId) && isAdmin();
+    }
+
+    // 9. /examAttempts/{attemptId} — Private Per-Student Exam Attempts with Terminal Submission Locking
+    match /examAttempts/{attemptId} {
+      allow get: if isValidId(attemptId) && isVerifiedUser() && (
+        (resource != null && existing().userId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(attemptId) &&
+        isValidExamAttempt(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().studentEmail == request.auth.token.email &&
+        incoming().status == 'in_progress' &&
+        incoming().marksObtained == 0 &&
+        incoming().percentage == 0 &&
+        incoming().passed == false &&
+        incoming().resultsPublished == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId)) &&
+        exists(/databases/$(database)/documents/exams/$(incoming().examId)) &&
+        get(/databases/$(database)/documents/exams/$(incoming().examId)).data.published == true &&
+        request.time >= get(/databases/$(database)/documents/exams/$(incoming().examId)).data.opensAt &&
+        request.time < get(/databases/$(database)/documents/exams/$(incoming().examId)).data.closesAt;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(attemptId) &&
+        isValidExamAttempt(incoming()) &&
+        incoming().examId == existing().examId &&
+        incoming().userId == existing().userId &&
+        incoming().attemptNumber == existing().attemptNumber &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().startedAt == existing().startedAt &&
+        incoming().expiresAt == existing().expiresAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action 1: Student auto-saves answers while attempt is in_progress
+          (
+            existing().userId == request.auth.uid &&
+            existing().status == 'in_progress' &&
+            incoming().status == 'in_progress' &&
+            request.time <= existing().expiresAt &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['answers', 'updatedAt'])
+          ) ||
+          // Action 2: Student final submission (Terminal State Lock: transitions out of in_progress once)
+          (
+            existing().userId == request.auth.uid &&
+            existing().status == 'in_progress' &&
+            (incoming().status == 'graded' || incoming().status == 'pending_review') &&
+            incoming().serverReceipt.size() == 64 &&
+            incoming().submittedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'answers', 'status', 'marksObtained', 'totalMarks', 'percentage',
+              'passed', 'resultsPublished', 'reviewBreakdown', 'serverReceipt',
+              'submittedAt', 'updatedAt'
+            ])
+          ) ||
+          // Action 3: Verified administrator manual grading, mark adjustment, or result publication
+          isAdmin()
+        );
+
+      allow delete: if isValidId(attemptId) && isAdmin();
+    }
+
+    // 10. /rankEntries/{entryId} — Sanitized Official Online Exam Rank Board Entries
+    match /rankEntries/{entryId} {
+      allow get: if isValidId(entryId) && ((resource != null && existing().published == true) || isAdmin());
+      allow list: if existing().published == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(entryId) &&
+        isValidRankBoardEntry(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/exams/$(incoming().examId)) &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(entryId) &&
+        isValidRankBoardEntry(incoming()) &&
+        incoming().examId == existing().examId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['published', 'anonymizeNames', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'attemptId', 'rankPosition', 'studentDisplayName', 'anonymizedCode',
+            'anonymizeNames', 'marksObtained', 'totalMarks', 'percentage',
+            'passed', 'isFinalized', 'published', 'serverReceipt', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(entryId) && isAdmin();
+    }
+
+    // 11. /announcements/{announcementId} — Administrator Broadcast Notices & Important Home Popups
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && ((resource != null && existing().published == true) || isAdmin());
+      allow list: if existing().published == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['published', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['isImportant', 'published', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'body', 'category', 'priority',
+            'isImportant', 'imageUrl', 'publishedAt', 'published', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(announcementId) && isAdmin();
+    }
+
+    // 12. /userActivities/{activityId} — Per-User Resource View, Download & Exam History
+    match /userActivities/{activityId} {
+      allow get: if isValidId(activityId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
+      allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(activityId) &&
+        isValidUserActivity(incoming()) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId));
+
+      allow update: if false;
+      allow delete: if isValidId(activityId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
+    }
+
+    // 13. /announcementReads/{readId} — Per-User Unread Badge Tracking
+    match /announcementReads/{readId} {
+      allow get: if isValidId(readId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
+      allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(readId) &&
+        isValidAnnouncementRead(incoming()) &&
+        incoming().readAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId)) &&
+        exists(/databases/$(database)/documents/announcements/$(incoming().announcementId));
+
+      allow update: if false;
+      allow delete: if isValidId(readId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
+    }
+
+    // 14. /auditLogs/{logId} — Immutable Privileged Audit Trail
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && existing().actorUid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+
+      allow update, delete: if false;
+    }
+
+    // 15. /rankBoards/{boardId} — Dynamic Administrator-Managed Rank Boards
+    match /rankBoards/{boardId} {
+      allow get: if isValidId(boardId) && ((resource != null && existing().published == true) || isAdmin());
+      allow list: if existing().published == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(boardId) &&
+        isValidCustomRankBoard(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(boardId) &&
+        isValidCustomRankBoard(incoming()) &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['published', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['rankingMode', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['linkedItemType', 'linkedItemId', 'linkedItemTitle', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['linkedItemTitle', 'subject', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'category', 'subject', 'targetGroup', 'description',
+            'rankingMode', 'linkedItemType', 'linkedItemId', 'linkedItemTitle',
+            'published', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(boardId) && isAdmin();
+    }
+
+    // 16. /rankBoardEntries/{entryId} — Sanitized PII-Free Dynamic Rank Board Entries
+    match /rankBoardEntries/{entryId} {
+      allow get: if isValidId(entryId) && ((resource != null && existing().boardPublished == true) || isAdmin());
+      allow list: if existing().boardPublished == true || isBootstrappedAdmin() || (isVerifiedUser() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(entryId) &&
+        isValidCustomRankEntry(incoming()) &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/rankBoards/$(incoming().boardId)) &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(entryId) &&
+        isValidCustomRankEntry(incoming()) &&
+        incoming().boardId == existing().boardId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['boardTitle', 'boardCategory', 'boardPublished', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayOrder', 'rankPosition', 'percentage', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['linkedItemTitle', 'subject', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'boardTitle', 'boardCategory', 'boardPublished',
+            'studentName', 'marks', 'maxMarks', 'percentage',
+            'rankPosition', 'isManualRank', 'displayOrder', 'subject',
+            'linkedItemType', 'linkedItemId', 'linkedItemTitle', 'updatedAt'
+          ]) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(entryId) && isAdmin();
+    }
+  }
+}

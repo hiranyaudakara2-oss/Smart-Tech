@@ -1,0 +1,441 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user account and profile metadata isolated to owner and administrators.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "admin"],
+          "maxLength": 16
+        },
+        "grade": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "photoURL", "role", "createdAt", "lastLoginAt", "updatedAt"]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Trusted role registry granting administrator privileges to a verified Firebase UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "grantedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "PlatformStats": {
+      "title": "PlatformStats",
+      "description": "Aggregated live counts of registered users, resources, and examination results without exposing PII.",
+      "type": "object",
+      "properties": {
+        "totalUsers": { "type": "integer" },
+        "totalNotes": { "type": "integer" },
+        "totalPapers": { "type": "integer" },
+        "totalPdfs": { "type": "integer" },
+        "totalExams": { "type": "integer" },
+        "completedAttempts": { "type": "integer" },
+        "publishedResults": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["totalUsers", "totalNotes", "totalPapers", "totalPdfs", "totalExams", "updatedAt"]
+    },
+    "NoteResource": {
+      "title": "NoteResource",
+      "description": "Educational note entry supporting Google Drive sharing links or PDF document metadata, subject categorization, and bounded tags.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "grade": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "description": { "type": "string", "minLength": 4, "maxLength": 2000 },
+        "tags": { "type": "array", "description": "Up to 10 subject tags." },
+        "sourceType": { "type": "string", "enum": ["drive", "pdf"], "maxLength": 16 },
+        "driveUrl": { "type": "string", "maxLength": 1500, "pattern": "^(https://(drive\\.google\\.com|docs\\.google\\.com)/.+)?$" },
+        "pdfUrl": { "type": "string", "minLength": 5, "maxLength": 1500 },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "fileSize": { "type": "integer" },
+        "thumbnailUrl": { "type": "string", "maxLength": 1000 },
+        "published": { "type": "boolean" },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "subject", "grade", "description", "pdfUrl", "storagePath", "fileName", "fileSize", "thumbnailUrl", "published", "authorId", "createdAt", "updatedAt"]
+    },
+    "ExamPaper": {
+      "title": "ExamPaper",
+      "description": "Past examination paper supporting Google Drive sharing links or PDF library document metadata.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "category": { "type": "string", "maxLength": 60 },
+        "year": { "type": "integer" },
+        "grade": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "examType": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "language": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "description": { "type": "string", "maxLength": 1500 },
+        "fileFormat": { "type": "string", "enum": ["PDF"], "maxLength": 10 },
+        "sourceType": { "type": "string", "enum": ["drive", "pdf"], "maxLength": 16 },
+        "driveUrl": { "type": "string", "maxLength": 1500, "pattern": "^(https://(drive\\.google\\.com|docs\\.google\\.com)/.+)?$" },
+        "pdfUrl": { "type": "string", "minLength": 5, "maxLength": 1500 },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "fileSize": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "subject", "year", "grade", "examType", "language", "description", "fileFormat", "pdfUrl", "storagePath", "fileName", "fileSize", "published", "authorId", "createdAt", "updatedAt"]
+    },
+    "OnlineExam": {
+      "title": "OnlineExam",
+      "description": "Publicly visible online examination metadata and sanitized question prompts without answers or 6-digit access codes.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "grade": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "description": { "type": "string", "minLength": 4, "maxLength": 2000 },
+        "instructions": { "type": "string", "minLength": 4, "maxLength": 2000 },
+        "opensAt": { "type": "string", "format": "date-time" },
+        "closesAt": { "type": "string", "format": "date-time" },
+        "timezone": { "type": "string", "enum": ["Asia/Colombo"], "maxLength": 40 },
+        "examMode": { "type": "string", "enum": ["native", "google_form"], "maxLength": 20 },
+        "durationMinutes": { "type": "integer" },
+        "totalMarks": { "type": "integer" },
+        "passingMarks": { "type": "integer" },
+        "maxAttempts": { "type": "integer" },
+        "questionCount": { "type": "integer" },
+        "questions": { "type": "array", "description": "Bounded up to 50 public question items without answer keys." },
+        "showExplanations": { "type": "boolean" },
+        "resultsPublished": { "type": "boolean" },
+        "rankBoardPublished": { "type": "boolean" },
+        "anonymizeRankBoard": { "type": "boolean" },
+        "accessCodeProtected": { "type": "boolean" },
+        "published": { "type": "boolean" },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "subject", "grade", "description", "instructions", "opensAt", "closesAt", "timezone", "published", "authorId", "createdAt", "updatedAt"]
+    },
+    "ExamSecretLink": {
+      "title": "ExamSecretLink",
+      "description": "Protected Google Forms destination URL accessible only to admins or during the active server-enforced exam window.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "formUrl": { "type": "string", "minLength": 24, "maxLength": 1500, "pattern": "^https://(docs\\.google\\.com/forms/|forms\\.gle/).+" },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["examId", "formUrl", "authorId", "createdAt", "updatedAt"]
+    },
+    "ExamSealedConfig": {
+      "title": "ExamSealedConfig",
+      "description": "Server-encrypted AES-256-GCM answer key and HMAC-SHA256 6-digit password verifier for native online examinations.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "codeMac": { "type": "string", "minLength": 64, "maxLength": 128 },
+        "sealedAccessCode": { "type": "string", "minLength": 16, "maxLength": 512 },
+        "codeRevoked": { "type": "boolean" },
+        "sealedAnswerKey": { "type": "string", "minLength": 16, "maxLength": 60000 },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["examId", "codeMac", "sealedAccessCode", "codeRevoked", "sealedAnswerKey", "authorId", "createdAt", "updatedAt"]
+    },
+    "ExamAttempt": {
+      "title": "ExamAttempt",
+      "description": "Private student examination session, auto-saved answers map, server-graded score, and terminal submission state.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "examTitle": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "studentEmail": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "attemptNumber": { "type": "integer" },
+        "status": { "type": "string", "enum": ["in_progress", "pending_review", "graded"], "maxLength": 20 },
+        "answers": { "type": "object", "description": "Native map of questionId -> student answer." },
+        "marksObtained": { "type": "integer" },
+        "totalMarks": { "type": "integer" },
+        "percentage": { "type": "integer" },
+        "passed": { "type": "boolean" },
+        "resultsPublished": { "type": "boolean" },
+        "reviewBreakdown": { "type": "array", "description": "Bounded up to 50 question grading items." },
+        "serverReceipt": { "type": "string", "maxLength": 128 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["examId", "examTitle", "subject", "userId", "studentName", "studentEmail", "attemptNumber", "status", "answers", "marksObtained", "totalMarks", "percentage", "passed", "resultsPublished", "reviewBreakdown", "serverReceipt", "startedAt", "expiresAt", "submittedAt", "createdAt", "updatedAt"]
+    },
+    "RankBoardEntry": {
+      "title": "RankBoardEntry",
+      "description": "Sanitized, PII-free official rank board entry for finalized examination submissions.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "examTitle": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "rankPosition": { "type": "integer" },
+        "studentDisplayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "anonymizedCode": { "type": "string", "minLength": 4, "maxLength": 24 },
+        "anonymizeNames": { "type": "boolean" },
+        "marksObtained": { "type": "integer" },
+        "totalMarks": { "type": "integer" },
+        "percentage": { "type": "integer" },
+        "passed": { "type": "boolean" },
+        "isFinalized": { "type": "boolean" },
+        "published": { "type": "boolean" },
+        "serverReceipt": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["examId", "examTitle", "subject", "attemptId", "rankPosition", "studentDisplayName", "anonymizedCode", "anonymizeNames", "marksObtained", "totalMarks", "percentage", "passed", "isFinalized", "published", "serverReceipt", "authorId", "createdAt", "updatedAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Platform-wide administrator notice broadcast to students and home visitors, supporting important popup alerts.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "body": { "type": "string", "minLength": 4, "maxLength": 3000 },
+        "category": { "type": "string", "enum": ["General Notice", "Exam Notice", "New Upload", "Important Announcement"], "maxLength": 40 },
+        "priority": { "type": "string", "enum": ["normal", "high", "urgent"], "maxLength": 20 },
+        "isImportant": { "type": "boolean" },
+        "imageUrl": { "type": "string", "maxLength": 1500 },
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "published": { "type": "boolean" },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "body", "category", "priority", "published", "authorId", "authorName", "createdAt", "updatedAt"]
+    },
+    "UserActivity": {
+      "title": "UserActivity",
+      "description": "Authenticated user resource view, download, or examination submission history item.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "resourceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "resourceType": { "type": "string", "enum": ["note", "paper", "exam"], "maxLength": 20 },
+        "resourceTitle": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "action": { "type": "string", "enum": ["viewed", "downloaded", "opened_exam", "submitted_exam"], "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "resourceId", "resourceType", "resourceTitle", "subject", "action", "createdAt"]
+    },
+    "AnnouncementRead": {
+      "title": "AnnouncementRead",
+      "description": "Tracks read status of an announcement per authenticated user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "announcementId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "readAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "announcementId", "readAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable record of privileged administrative actions.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorEmail": { "type": "string", "format": "email", "minLength": 3, "maxLength": 254 },
+        "action": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "targetType": { "type": "string", "enum": ["note", "paper", "exam", "announcement", "user", "admin", "stats", "result", "rankboard", "settings"], "maxLength": 30 },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "summary": { "type": "string", "minLength": 2, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "actorEmail", "action", "targetType", "targetId", "summary", "createdAt"]
+    },
+    "CustomRankBoard": {
+      "title": "CustomRankBoard",
+      "description": "Dynamic administrator-managed Rank Board for subjects, examinations, past papers, classes, or competitions.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "category": { "type": "string", "enum": ["Subject", "Examination", "Past Paper", "Class", "Competition"], "maxLength": 30 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "targetGroup": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "rankingMode": { "type": "string", "enum": ["auto", "manual"], "maxLength": 16 },
+        "linkedItemType": { "type": "string", "enum": ["none", "paper", "exam", "note"], "maxLength": 16 },
+        "linkedItemId": { "type": "string", "maxLength": 128, "pattern": "^([a-zA-Z0-9_\\-]+)?$" },
+        "linkedItemTitle": { "type": "string", "maxLength": 160 },
+        "published": { "type": "boolean" },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "category", "subject", "targetGroup", "description", "rankingMode", "linkedItemType", "linkedItemId", "linkedItemTitle", "published", "authorId", "createdAt", "updatedAt"]
+    },
+    "CustomRankEntry": {
+      "title": "CustomRankEntry",
+      "description": "Sanitized PII-free ranking entry belonging to a CustomRankBoard, supporting automatic marks-based ranking, tie handling, manual rank override, and linked Past Paper cascading cleanup.",
+      "type": "object",
+      "properties": {
+        "boardId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "boardTitle": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "boardCategory": { "type": "string", "enum": ["Subject", "Examination", "Past Paper", "Class", "Competition"], "maxLength": 30 },
+        "boardPublished": { "type": "boolean" },
+        "studentName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "marks": { "type": "number" },
+        "maxMarks": { "type": "number" },
+        "percentage": { "type": "integer" },
+        "rankPosition": { "type": "integer" },
+        "isManualRank": { "type": "boolean" },
+        "displayOrder": { "type": "integer" },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "linkedItemType": { "type": "string", "enum": ["none", "paper", "exam", "note"], "maxLength": 16 },
+        "linkedItemId": { "type": "string", "maxLength": 128, "pattern": "^([a-zA-Z0-9_\\-]+)?$" },
+        "linkedItemTitle": { "type": "string", "maxLength": 160 },
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["boardId", "boardTitle", "boardCategory", "boardPublished", "studentName", "marks", "maxMarks", "percentage", "rankPosition", "isManualRank", "displayOrder", "subject", "linkedItemType", "linkedItemId", "linkedItemTitle", "authorId", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account documents accessible only to the document owner or verified administrators."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Trusted administrator UID registry managed solely by verified administrators."
+    },
+    "/stats/{statId}": {
+      "schema": { "$ref": "#/entities/PlatformStats" },
+      "description": "Singleton platform statistics counter document (/stats/platform)."
+    },
+    "/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/NoteResource" },
+      "description": "Educational notes library; published notes are publicly readable, writes restricted to administrators."
+    },
+    "/papers/{paperId}": {
+      "schema": { "$ref": "#/entities/ExamPaper" },
+      "description": "Past examination papers archive; published papers are publicly readable, writes restricted to administrators."
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/OnlineExam" },
+      "description": "Online examination schedule entries and public question prompts without answer keys or passwords."
+    },
+    "/examLinks/{examId}": {
+      "schema": { "$ref": "#/entities/ExamSecretLink" },
+      "description": "Time-locked Google Forms URLs released only when request.time is within the parent exam schedule."
+    },
+    "/examConfigs/{examId}": {
+      "schema": { "$ref": "#/entities/ExamSealedConfig" },
+      "description": "Server-encrypted AES-256-GCM answer keys and HMAC-SHA256 6-digit password verifiers."
+    },
+    "/examAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/ExamAttempt" },
+      "description": "Private per-student examination attempts with terminal submission locking."
+    },
+    "/rankEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/RankBoardEntry" },
+      "description": "Sanitized, PII-free official rank board entries for finalized examination results."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Administrator announcements visible on Home and User Dashboards when published."
+    },
+    "/userActivities/{activityId}": {
+      "schema": { "$ref": "#/entities/UserActivity" },
+      "description": "Authenticated user resource view/download/exam history isolated per user."
+    },
+    "/announcementReads/{readId}": {
+      "schema": { "$ref": "#/entities/AnnouncementRead" },
+      "description": "Authenticated user read receipts for announcements isolated per user."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Append-only administrative audit logs."
+    },
+    "/rankBoards/{boardId}": {
+      "schema": { "$ref": "#/entities/CustomRankBoard" },
+      "description": "Dynamic administrator-created Rank Boards; published boards are publicly readable, writes restricted to administrators."
+    },
+    "/rankBoardEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/CustomRankEntry" },
+      "description": "Dynamic Rank Board entries; entries on published boards are publicly readable without PII, writes restricted to administrators."
+    }
+  }
+}

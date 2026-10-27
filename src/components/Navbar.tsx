@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { LogOut, Menu, User as UserIcon, X } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { LogOut, Menu, Search as SearchIcon, User as UserIcon, X } from 'lucide-react';
 import { usePlatform } from '../context/PlatformContext';
 import type { NavRoute } from '../types/platform';
 
@@ -21,8 +21,45 @@ export function Navbar() {
     unreadAnnouncementsCount,
     signInWithGoogle,
     signOutUser,
+    publishedNotes,
+    publishedPapers,
+    publishedExams,
   } = usePlatform();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return { notes: [], papers: [], exams: [] };
+    const notes = publishedNotes
+      .filter(
+        (n) =>
+          n.title.toLowerCase().includes(q) ||
+          n.subject.toLowerCase().includes(q) ||
+          n.description.toLowerCase().includes(q) ||
+          n.tags.some((t) => t.toLowerCase().includes(q))
+      )
+      .slice(0, 5);
+    const papers = publishedPapers
+      .filter(
+        (p) =>
+          p.title.toLowerCase().includes(q) ||
+          p.subject.toLowerCase().includes(q) ||
+          p.description.toLowerCase().includes(q) ||
+          String(p.year).includes(q)
+      )
+      .slice(0, 5);
+    const exams = publishedExams
+      .filter(
+        (ex) =>
+          ex.title.toLowerCase().includes(q) ||
+          ex.subject.toLowerCase().includes(q) ||
+          ex.description.toLowerCase().includes(q)
+      )
+      .slice(0, 5);
+    return { notes, papers, exams };
+  }, [searchQuery, publishedNotes, publishedPapers, publishedExams]);
 
   const handleNavClick = (target: NavRoute) => {
     navigate(target);
@@ -57,7 +94,7 @@ export function Navbar() {
         {/* Zone 2: Exact Requested Single-Line Navigation Links */}
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-6 text-sm font-medium"
+          className="hidden md:flex items-center gap-5 text-sm font-medium"
         >
           {NAV_ITEMS.map((item) => {
             const isActive =
@@ -82,6 +119,116 @@ export function Navbar() {
             );
           })}
         </nav>
+
+        {/* Global Search Bar */}
+        <div className="relative hidden lg:block flex-1 max-w-xs mx-4">
+          <div className="relative">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+              <SearchIcon className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setSearchFocused(false), 200)}
+              placeholder="Search notes, papers, exams..."
+              className="w-full rounded-lg border border-slate-700/80 bg-[#060b18] py-1.5 pl-9 pr-3 text-xs text-slate-100 placeholder-slate-500 focus:border-cyan-400 focus:outline-none"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-200"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {searchFocused && searchQuery.trim().length > 0 && (
+            <div className="absolute left-0 right-0 mt-2 rounded-xl border border-sky-400/30 bg-[#060b18]/95 p-2 shadow-2xl backdrop-blur-md z-50 max-h-80 overflow-y-auto">
+              {searchResults.notes.length === 0 &&
+              searchResults.papers.length === 0 &&
+              searchResults.exams.length === 0 ? (
+                <div className="p-3 text-center text-xs text-slate-400">
+                  No matching educational notes or past papers found.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {searchResults.notes.length > 0 && (
+                    <div>
+                      <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                        Notes ({searchResults.notes.length})
+                      </p>
+                      {searchResults.notes.map((n) => (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => {
+                            setSearchQuery('');
+                            setSearchFocused(false);
+                            handleNavClick('notes');
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/80 hover:text-cyan-300"
+                        >
+                          <span className="truncate">{n.title}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-slate-400">{n.subject}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {searchResults.papers.length > 0 && (
+                    <div>
+                      <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                        Papers ({searchResults.papers.length})
+                      </p>
+                      {searchResults.papers.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setSearchQuery('');
+                            setSearchFocused(false);
+                            handleNavClick('papers');
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/80 hover:text-cyan-300"
+                        >
+                          <span className="truncate">{p.title}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-slate-400">{p.year}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {searchResults.exams.length > 0 && (
+                    <div>
+                      <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                        Online Exams ({searchResults.exams.length})
+                      </p>
+                      {searchResults.exams.map((ex) => (
+                        <button
+                          key={ex.id}
+                          type="button"
+                          onClick={() => {
+                            setSearchQuery('');
+                            setSearchFocused(false);
+                            handleNavClick('online-papers');
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/80 hover:text-cyan-300"
+                        >
+                          <span className="truncate">{ex.title}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-slate-400">{ex.subject}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Zone 3: Primary Account Action */}
         <div className="hidden md:flex items-center gap-3 shrink-0">

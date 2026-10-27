@@ -50,12 +50,10 @@ interface PlatformContextValue {
   userProfile: UserProfile | null;
   isVerifiedAdmin: boolean;
   adminServerVerified: boolean;
-  adminPassphraseRequired: boolean;
-  verifyAdminOnServer: (passphrase?: string) => Promise<{ ok: boolean; error?: string }>;
+  verifyAdminOnServer: () => Promise<{ ok: boolean; error?: string }>;
   signInAdminWithEmailPassword: (
     email: string,
-    password: string,
-    passphrase?: string
+    password: string
   ) => Promise<{ ok: boolean; error?: string; providerDisabled?: boolean }>;
   signInWithGoogle: (redirectRoute?: NavRoute) => Promise<void>;
   signOutUser: () => Promise<void>;
@@ -350,7 +348,6 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isVerifiedAdmin, setIsVerifiedAdmin] = useState(false);
   const [adminServerVerified, setAdminServerVerified] = useState(false);
-  const [adminPassphraseRequired, setAdminPassphraseRequired] = useState(false);
 
   const [dataLoading, setDataLoading] = useState(true);
   const [quotaErrorUrl, setQuotaErrorUrl] = useState<string | null>(null);
@@ -503,7 +500,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const verifyAdminOnServer = useCallback(
-    async (passphrase?: string): Promise<{ ok: boolean; error?: string }> => {
+    async (): Promise<{ ok: boolean; error?: string }> => {
       const user = auth.currentUser;
       if (!user) {
         return { ok: false, error: 'Authenticate with an administrator account first.' };
@@ -516,15 +513,13 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${idToken}`,
           },
-          body: JSON.stringify({ passphrase: passphrase || '' }),
+          body: JSON.stringify({}),
         });
         const data = (await resp.json()) as {
           authorized?: boolean;
-          passphraseRequired?: boolean;
           adminSessionToken?: string;
           error?: string;
         };
-        setAdminPassphraseRequired(Boolean(data.passphraseRequired));
         if (resp.ok && data.authorized) {
           if (data.adminSessionToken) {
             window.sessionStorage.setItem('smart_tech_admin_session', data.adminSessionToken);
@@ -534,7 +529,8 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           return { ok: true };
         }
         setAdminServerVerified(false);
-        return { ok: false, error: data.error || 'Administrator verification failed.' };
+        setIsVerifiedAdmin(false);
+        return { ok: false, error: data.error || 'Access Denied: Unauthorized Administrator' };
       } catch {
         return { ok: false, error: 'Unable to reach server authorization service.' };
       }
@@ -545,76 +541,44 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
   const signInAdminWithEmailPassword = useCallback(
     async (
       email: string,
-      password: string,
-      passphrase?: string
-    ): Promise<{ ok: boolean; error?: string; providerDisabled?: boolean }> => {
-      const cleanEmail = email.trim();
-      if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-        return { ok: false, error: 'Enter a valid administrator email address.' };
+      password: string
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail) {
+        return { ok: false, error: 'Administrator email address is required.' };
       }
-      if (!password || password.length < 6) {
-        return { ok: false, error: 'Enter your administrator password (minimum 6 characters).' };
+      if (!password) {
+        return { ok: false, error: 'Administrator password is required.' };
       }
 
       try {
-        const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-        if (!cred.user.emailVerified) {
-          await signOut(auth);
-          return {
-            ok: false,
-            error:
-              'Your administrator email address must be verified before accessing the Admin Dashboard.',
-          };
+        const resp = await fetch('/api/admin/credentials-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail, password }),
+        });
+        const data = await resp.json();
+
+        if (resp.ok && data.authorized && data.adminSessionToken) {
+          window.sessionStorage.setItem('smart_tech_admin_session', data.adminSessionToken);
+          setAdminServerVerified(true);
+          setIsVerifiedAdmin(true);
+          pushToast('success', 'Admin session active', `Signed in as ${data.email || cleanEmail}`);
+          return { ok: true };
         }
 
-        const check = await verifyAdminOnServer(passphrase);
-        if (!check.ok) {
-          if (!adminPassphraseRequired) {
-            await signOut(auth).catch(() => undefined);
-          }
-          return {
-            ok: false,
-            error:
-              check.error ||
-              'Access denied: this account does not hold administrator privileges.',
-          };
-        }
-
-        pushToast('success', 'Administrator session active', `Signed in as ${cred.user.email}`);
-        return { ok: true };
-      } catch (err: unknown) {
-        const code = (err as { code?: string })?.code || '';
-        if (code === 'auth/operation-not-allowed') {
-          return {
-            ok: false,
-            providerDisabled: true,
-            error:
-              'Email/Password sign-in is not enabled yet in your Firebase Console. Enable Email/Password under Authentication -> Sign-in method, or sign in with your verified Google administrator account below.',
-          };
-        }
-        if (
-          code === 'auth/invalid-credential' ||
-          code === 'auth/wrong-password' ||
-          code === 'auth/user-not-found'
-        ) {
-          return {
-            ok: false,
-            error: 'Invalid administrator email or password. Please verify your credentials.',
-          };
-        }
-        if (code === 'auth/too-many-requests') {
-          return {
-            ok: false,
-            error: 'Too many failed login attempts. Account access is temporarily throttled.',
-          };
-        }
         return {
           ok: false,
-          error: 'Authentication could not be completed. Check your connection and try again.',
+          error: data.error || 'Access Denied: Incorrect email address or password.',
+        };
+      } catch {
+        return {
+          ok: false,
+          error: 'Unable to reach server authentication service.',
         };
       }
     },
-    [adminPassphraseRequired, pushToast, verifyAdminOnServer]
+    [pushToast]
   );
 
   // Firebase Auth listener
@@ -645,11 +609,10 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${idToken}`,
             },
-            body: JSON.stringify({ passphrase: '' }),
+            body: JSON.stringify({}),
           }).catch(() => null);
           if (resp) {
             const payload = await resp.json().catch(() => ({}));
-            setAdminPassphraseRequired(Boolean(payload.passphraseRequired));
             if (resp.ok && payload.authorized) {
               if (payload.adminSessionToken) {
                 window.sessionStorage.setItem(
@@ -1271,7 +1234,6 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     userProfile,
     isVerifiedAdmin,
     adminServerVerified,
-    adminPassphraseRequired,
     verifyAdminOnServer,
     signInAdminWithEmailPassword,
     signInWithGoogle,

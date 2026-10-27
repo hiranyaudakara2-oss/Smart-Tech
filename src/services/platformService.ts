@@ -1797,45 +1797,7 @@ export async function revokeAdminPrivilege(targetUid: string, targetEmail: strin
   }
 }
 
-export async function fetchAdminSecuritySettingsStatus(): Promise<{
-  secondaryPassphraseActive: boolean;
-  managedViaEnv: boolean;
-  updatedAtMs: number | null;
-  updatedByEmail: string | null;
-}> {
-  const headers = await getBearerHeaders();
-  const resp = await fetch('/api/admin/settings/status', { headers });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Unable to load administrator security settings.');
-  }
-  return data;
-}
 
-export async function configureAdminSecondaryPassphrase(
-  action: 'set' | 'clear',
-  newPassphrase?: string
-): Promise<void> {
-  const headers = await getBearerHeaders({ 'Content-Type': 'application/json' });
-  const resp = await fetch('/api/admin/settings/passphrase', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ action, newPassphrase: newPassphrase || '' }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Failed to update secondary administrator passphrase.');
-  }
-  await writeAuditLog({
-    action: action === 'clear' ? 'CLEAR_ADMIN_PASSPHRASE' : 'SET_ADMIN_PASSPHRASE',
-    targetType: 'settings',
-    targetId: 'admin_passphrase',
-    summary:
-      action === 'clear'
-        ? 'Cleared secondary server administrator passphrase'
-        : 'Updated secondary server administrator passphrase',
-  });
-}
 
 // ============================================================================
 // Starter Curriculum & Native Exam Seeder (Admin-Triggered)

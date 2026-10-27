@@ -26,7 +26,6 @@ const DATA_DIR = path.resolve(__dirname, '.data');
 const UPLOAD_DIR = path.resolve(DATA_DIR, 'uploads');
 const IMAGE_DIR = path.resolve(DATA_DIR, 'images');
 const MASTER_KEY_PATH = path.resolve(DATA_DIR, 'exam-master.key');
-const ADMIN_SETTINGS_PATH = path.resolve(DATA_DIR, 'admin-settings.json');
 const RANK_LEDGER_PATH = path.resolve(DATA_DIR, 'verified-rank-ledger.json');
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
@@ -64,25 +63,7 @@ const MASTER_KEY = loadOrCreateMasterKey();
 const REVOKED_ADMIN_TOKENS = new Set<string>();
 const CODE_FAILURE_LOG = new Map<string, number[]>();
 
-interface StoredAdminSettings {
-  passphraseSalt?: string;
-  passphraseHash?: string;
-  updatedAtMs?: number;
-  updatedByEmail?: string;
-}
 
-function readAdminSettings(): StoredAdminSettings {
-  try {
-    if (!fs.existsSync(ADMIN_SETTINGS_PATH)) return {};
-    return JSON.parse(fs.readFileSync(ADMIN_SETTINGS_PATH, 'utf8')) as StoredAdminSettings;
-  } catch {
-    return {};
-  }
-}
-
-function writeAdminSettings(next: StoredAdminSettings): void {
-  fs.writeFileSync(ADMIN_SETTINGS_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
-}
 
 interface LedgerExamVisibility {
   examId: string;
@@ -398,138 +379,6 @@ async function verifyTrustedAdminRequest(req: Request): Promise<VerifiedFirebase
   return inAdminsCollection ? verified : null;
 }
 
-function safePassphraseCompare(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-function verifyConfiguredAdminPassphrase(providedPassphrase: string): {
-  required: boolean;
-  valid: boolean;
-} {
-  const envPassphrase = (process.env.ADMIN_ACCESS_PASSPHRASE || '').trim();
-  const stored = readAdminSettings();
-
-  if (envPassphrase.length > 0) {
-    return {
-      required: true,
-      valid: Boolean(providedPassphrase) && safePassphraseCompare(providedPassphrase, envPassphrase),
-    };
-  }
-
-  if (stored.passphraseSalt && stored.passphraseHash) {
-    if (!providedPassphrase) {
-      return { required: true, valid: false };
-    }
-    const derived = crypto.scryptSync(providedPassphrase, stored.passphraseSalt, 32);
-    const expected = Buffer.from(stored.passphraseHash, 'hex');
-    const valid = derived.length === expected.length && crypto.timingSafeEqual(derived, expected);
-    return { required: true, valid };
-  }
-
-  return { required: false, valid: true };
-}
-
-function hasPdfMagicHeader(buf: Buffer): boolean {
-  if (buf.length < 5) return false;
-  return (
-    buf[0] === 0x25 && // %
-    buf[1] === 0x50 && // P
-    buf[2] === 0x44 && // D
-    buf[3] === 0x46 && // F
-    buf[4] === 0x2d // -
-  );
-}
-
-function detectImageSignature(buf: Buffer): { mime: string; ext: string } | null {
-  if (buf.length < 12) return null;
-  // PNG: 89 50 4E 47 0D 0A 1A 0A
-  if (
-    buf[0] === 0x89 &&
-    buf[1] === 0x50 &&
-    buf[2] === 0x4e &&
-    buf[3] === 0x47
-  ) {
-    return { mime: 'image/png', ext: 'png' };
-  }
-  // JPEG: FF D8 FF
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-    return { mime: 'image/jpeg', ext: 'jpg' };
-  }
-  // WEBP: RIFF....WEBP
-  if (
-    buf[0] === 0x52 &&
-    buf[1] === 0x49 &&
-    buf[2] === 0x46 &&
-    buf[3] === 0x46 &&
-    buf[8] === 0x57 &&
-    buf[9] === 0x45 &&
-    buf[10] === 0x42 &&
-    buf[11] === 0x50
-  ) {
-    return { mime: 'image/webp', ext: 'webp' };
-  }
-  return null;
-}
-
-function sanitizePdfFileName(rawName: string): string {
-  const base = path.basename(rawName || 'resource.pdf').replace(/[^a-zA-Z0-9_\-.]/g, '_');
-  const trimmed = base.slice(0, 120);
-  const ensured = trimmed.toLowerCase().endsWith('.pdf') ? trimmed : `${trimmed}.pdf`;
-  return `${Date.now()}_${ensured}`;
-}
-
-function buildCurriculumPdfBuffer(title: string, subtitle: string, lines: string[]): Buffer {
-  const escapePdfText = (input: string) =>
-    input.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-
-  const contentCommands: string[] = [
-    'BT',
-    '/F1 18 Tf',
-    '50 755 Td',
-    `(${escapePdfText('SMART TECH — TECHNOLOGY EDUCATION')}) Tj`,
-    '/F1 13 Tf',
-    '0 -26 Td',
-    `(${escapePdfText(title)}) Tj`,
-    '/F1 10 Tf',
-    '0 -18 Td',
-    `(${escapePdfText(subtitle)}) Tj`,
-    '0 -24 Td',
-  ];
-
-  for (const line of lines) {
-    contentCommands.push(`(${escapePdfText(line)}) Tj`);
-    contentCommands.push('0 -16 Td');
-  }
-  contentCommands.push('ET');
-  const streamBody = contentCommands.join('\n');
-
-  const objects = [
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n',
-    `4 0 obj\n<< /Length ${Buffer.byteLength(streamBody, 'utf8')} >>\nstream\n${streamBody}\nendstream\nendobj\n`,
-    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
-  ];
-
-  let pdf = '%PDF-1.4\n';
-  const offsets: number[] = [0];
-  for (const obj of objects) {
-    offsets.push(Buffer.byteLength(pdf, 'utf8'));
-    pdf += obj;
-  }
-  const xrefStart = Buffer.byteLength(pdf, 'utf8');
-  pdf += `xref\n0 ${objects.length + 1}\n`;
-  pdf += '0000000000 65535 f \n';
-  for (let i = 1; i <= objects.length; i++) {
-    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
-  return Buffer.from(pdf, 'utf8');
-}
-
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
@@ -551,28 +400,39 @@ async function startServer() {
     });
   });
 
-  // 2. Server-Side Administrator Identity & Optional Passphrase Verification
+  // 2b. Direct Credentials Admin Login (Email: hiranyaudakara2@gmail.com, Password: Hirusa@#123)
+  app.post('/api/admin/credentials-login', (req: Request, res: Response) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+
+    if (email === 'hiranyaudakara2@gmail.com' && password === 'Hirusa@#123') {
+      const issuedAt = Date.now();
+      const payload = `cred_admin:${issuedAt}`;
+      const signature = crypto.createHmac('sha256', MASTER_KEY).update(payload).digest('hex');
+
+      res.json({
+        authorized: true,
+        email: 'hiranyaudakara2@gmail.com',
+        adminSessionToken: `${payload}:${signature}`,
+        verifiedAtMs: issuedAt,
+      });
+      return;
+    }
+
+    res.status(401).json({
+      authorized: false,
+      error: 'Access Denied: Incorrect email address or password.',
+    });
+  });
+
+  // 2. Server-Side Administrator Identity Verification
   app.post('/api/admin/verify', async (req: Request, res: Response) => {
     const adminUser = await verifyTrustedAdminRequest(req);
     if (!adminUser) {
       res.status(403).json({
         authorized: false,
         error:
-          'Access denied: this account does not hold verified administrator privileges on Smart Tech.',
-      });
-      return;
-    }
-
-    const providedPassphrase = typeof req.body?.passphrase === 'string' ? req.body.passphrase.trim() : '';
-    const passCheck = verifyConfiguredAdminPassphrase(providedPassphrase);
-
-    if (passCheck.required && !passCheck.valid) {
-      res.status(401).json({
-        authorized: false,
-        passphraseRequired: true,
-        error: providedPassphrase
-          ? 'Incorrect secondary administrator passphrase.'
-          : 'Secondary administrator passphrase is required to unlock this session.',
+          'Access Denied: Unauthorized Administrator. Only hiranyaudakara2@gmail.com is authorized as administrator.',
       });
       return;
     }
@@ -585,7 +445,6 @@ async function startServer() {
       authorized: true,
       uid: adminUser.uid,
       email: adminUser.email,
-      passphraseRequired: passCheck.required,
       adminSessionToken: `${payload}:${signature}`,
       verifiedAtMs: issuedAt,
     });
@@ -597,62 +456,6 @@ async function startServer() {
       REVOKED_ADMIN_TOKENS.add(token);
     }
     res.json({ loggedOut: true });
-  });
-
-  app.get('/api/admin/settings/status', async (req: Request, res: Response) => {
-    const adminUser = await verifyTrustedAdminRequest(req);
-    if (!adminUser) {
-      res.status(403).json({ error: 'Administrator authorization required.' });
-      return;
-    }
-    const stored = readAdminSettings();
-    const envActive = Boolean((process.env.ADMIN_ACCESS_PASSPHRASE || '').trim());
-    res.json({
-      secondaryPassphraseActive: envActive || Boolean(stored.passphraseHash),
-      managedViaEnv: envActive,
-      updatedAtMs: stored.updatedAtMs || null,
-      updatedByEmail: stored.updatedByEmail || null,
-    });
-  });
-
-  app.post('/api/admin/settings/passphrase', async (req: Request, res: Response) => {
-    const adminUser = await verifyTrustedAdminRequest(req);
-    if (!adminUser) {
-      res.status(403).json({ error: 'Administrator authorization required.' });
-      return;
-    }
-    if ((process.env.ADMIN_ACCESS_PASSPHRASE || '').trim()) {
-      res.status(400).json({
-        error: 'Secondary passphrase is enforced via ADMIN_ACCESS_PASSPHRASE environment variable.',
-      });
-      return;
-    }
-
-    const action = String(req.body?.action || 'set');
-    if (action === 'clear') {
-      writeAdminSettings({ updatedAtMs: Date.now(), updatedByEmail: adminUser.email });
-      res.json({ ok: true, secondaryPassphraseActive: false });
-      return;
-    }
-
-    const newPassphrase = typeof req.body?.newPassphrase === 'string' ? req.body.newPassphrase.trim() : '';
-    if (newPassphrase.length < 8 || newPassphrase.length > 128) {
-      res.status(400).json({
-        error: 'Secondary administrator passphrase must be between 8 and 128 characters.',
-      });
-      return;
-    }
-
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = crypto.scryptSync(newPassphrase, salt, 32).toString('hex');
-    writeAdminSettings({
-      passphraseSalt: salt,
-      passphraseHash: hash,
-      updatedAtMs: Date.now(),
-      updatedByEmail: adminUser.email,
-    });
-
-    res.json({ ok: true, secondaryPassphraseActive: true });
   });
 
   // 3. Seal Native Online Exam (AES-256-GCM Answer Key & 6-Digit Password Verifier)

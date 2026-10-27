@@ -871,7 +871,8 @@ service cloud.firestore {
       allow create: if isVerifiedUser() &&
         isValidId(readId) &&
         isValidAnnouncementRead(incoming()) &&
-        incoming().readAt == request.time &&
+        incoming().readAt is timestamp &&
+        incoming().userId == request.auth.uid &&
         exists(/databases/$(database)/documents/users/$(incoming().userId)) &&
         exists(/databases/$(database)/documents/announcements/$(incoming().announcementId));
 

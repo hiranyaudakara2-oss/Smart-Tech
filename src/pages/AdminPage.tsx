@@ -176,16 +176,8 @@ export function AdminPage() {
   const [paperError, setPaperError] = useState<string | null>(null);
   const [paperBusy, setPaperBusy] = useState(false);
 
-  // Statistics & Admin Settings State
+  // Statistics State
   const [reconcilingStats, setReconcilingStats] = useState(false);
-  const [secSettings, setSecSettings] = useState<{
-    secondaryPassphraseActive: boolean;
-    managedViaEnv: boolean;
-    updatedAtMs: number | null;
-    updatedByEmail: string | null;
-  } | null>(null);
-  const [newPassphrase, setNewPassphrase] = useState('');
-  const [savingPassphrase, setSavingPassphrase] = useState(false);
 
   // Delete Confirmation Modal
   const [confirmState, setConfirmState] = useState<{
@@ -195,14 +187,6 @@ export function AdminPage() {
     action: () => Promise<void>;
   } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
-
-  useEffect(() => {
-    if (activeSection === 'settings' && isVerifiedAdmin && adminServerVerified) {
-      fetchAdminSecuritySettingsStatus()
-        .then((res) => setSecSettings(res))
-        .catch(() => undefined);
-    }
-  }, [activeSection, isVerifiedAdmin, adminServerVerified]);
 
   const adminUidSet = useMemo(() => new Set(allAdmins.map((a) => a.uid)), [allAdmins]);
 
@@ -2115,101 +2099,19 @@ export function AdminPage() {
           {/* =============================================================== */}
           {activeSection === 'settings' && (
             <div className="space-y-6">
-              <div className="glass-surface rounded-2xl p-6">
+              <div className="glass-surface rounded-2xl p-6 text-xs text-slate-300">
                 <div className="flex items-start gap-3">
                   <ShieldCheck className="mt-0.5 h-5 w-5 text-cyan-300" aria-hidden="true" />
                   <div>
                     <h2 className="text-lg font-semibold text-slate-50">
-                      Secondary Server Administrator Passphrase
+                      Administrator Security &amp; Infrastructure
                     </h2>
                     <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                      Optional second-factor passphrase hashed with <code className="font-mono text-slate-200">scrypt</code> on the server. When set, administrators must provide both verified Firebase credentials and this passphrase.
+                      The administrator dashboard is securely authorized exclusively for <strong className="text-cyan-300">hiranyaudakara2@gmail.com</strong> via Firebase Google Sign-In and Cloud Firestore security rules.
                     </p>
                   </div>
                 </div>
-
-                {secSettings?.managedViaEnv ? (
-                  <p className="mt-4 rounded-xl border border-sky-400/30 bg-sky-950/25 p-4 text-xs text-cyan-200">
-                    Managed via server environment variable <code className="font-mono">ADMIN_ACCESS_PASSPHRASE</code>.
-                  </p>
-                ) : (
-                  <div className="mt-5 max-w-md space-y-3">
-                    <p className="text-xs text-slate-300">
-                      Current Status:{' '}
-                      <strong className="text-cyan-300">
-                        {secSettings?.secondaryPassphraseActive ? 'Enabled' : 'Not Required'}
-                      </strong>
-                    </p>
-                    <input
-                      type="password"
-                      value={newPassphrase}
-                      onChange={(e) => setNewPassphrase(e.target.value)}
-                      placeholder="New secondary passphrase (min 8 characters)..."
-                      className="w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                    <div className="flex flex-wrap gap-3">
-                      <button
-                        type="button"
-                        disabled={savingPassphrase || newPassphrase.trim().length < 8}
-                        onClick={async () => {
-                          setSavingPassphrase(true);
-                          try {
-                            await configureAdminSecondaryPassphrase('set', newPassphrase.trim());
-                            setNewPassphrase('');
-                            const updated = await fetchAdminSecuritySettingsStatus();
-                            setSecSettings(updated);
-                            pushToast('success', 'Secondary passphrase updated');
-                          } catch (err) {
-                            pushToast(
-                              'error',
-                              'Could not set passphrase',
-                              err instanceof Error ? err.message : ''
-                            );
-                          } finally {
-                            setSavingPassphrase(false);
-                          }
-                        }}
-                        className="rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
-                      >
-                        Set / Rotate Passphrase
-                      </button>
-
-                      {secSettings?.secondaryPassphraseActive && (
-                        <button
-                          type="button"
-                          disabled={savingPassphrase}
-                          onClick={async () => {
-                            setSavingPassphrase(true);
-                            try {
-                              await configureAdminSecondaryPassphrase('clear');
-                              const updated = await fetchAdminSecuritySettingsStatus();
-                              setSecSettings(updated);
-                              pushToast('info', 'Secondary passphrase cleared');
-                            } catch (err) {
-                              pushToast(
-                                'error',
-                                'Could not clear passphrase',
-                                err instanceof Error ? err.message : ''
-                              );
-                            } finally {
-                              setSavingPassphrase(false);
-                            }
-                          }}
-                          className="rounded-lg border border-slate-700 px-4 py-2 text-xs font-medium text-slate-200 hover:text-white"
-                        >
-                          Disable Secondary Passphrase
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="glass-surface rounded-2xl p-6 text-xs text-slate-300">
-                <h3 className="text-base font-semibold text-slate-50">
-                  Connected Firebase Infrastructure
-                </h3>
-                <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <dl className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 border-t border-slate-800 pt-4">
                   <div>
                     <dt className="text-slate-400">Firebase Project ID</dt>
                     <dd className="mt-0.5 font-mono text-cyan-300">{FIREBASE_PROJECT_ID}</dd>

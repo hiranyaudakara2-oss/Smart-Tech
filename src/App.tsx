@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { PlatformProvider, usePlatform } from './context/PlatformContext';
 import { LoadingScreen } from './components/LoadingScreen';
 import { Navbar } from './components/Navbar';
@@ -19,6 +19,49 @@ function AppShell() {
     const params = new URLSearchParams(window.location.search);
     return params.get('autostart') === '1';
   });
+
+  // Global Scroll Animation Observer with Staggered Child Data-Delay Support
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const targetEl = entry.target as HTMLElement;
+
+            // Handle explicit data-delay on the target element
+            const selfDelay = targetEl.getAttribute('data-delay');
+            if (selfDelay) {
+              targetEl.style.transitionDelay = `${selfDelay}ms`;
+            }
+
+            targetEl.classList.add('is-visible');
+
+            // Stagger animation for children within sections or cards
+            const children = targetEl.querySelectorAll<HTMLElement>(
+              '[data-delay], .scroll-reveal-child, .glass-panel, .glass-surface'
+            );
+            children.forEach((child, index) => {
+              const childDataDelay = child.getAttribute('data-delay');
+              const computedDelay = childDataDelay ? `${childDataDelay}ms` : `${(index + 1) * 75}ms`;
+              child.style.transitionDelay = computedDelay;
+              child.classList.add('is-visible');
+            });
+          }
+        });
+      },
+      { threshold: 0.08, rootMargin: '0px 0px -30px 0px' }
+    );
+
+    const elements = document.querySelectorAll('.scroll-reveal, section, .glass-panel');
+    elements.forEach((el) => {
+      if (!el.classList.contains('scroll-reveal')) {
+        el.classList.add('scroll-reveal');
+      }
+      observer.observe(el);
+    });
+
+    return () => observer.disconnect();
+  }, [route, introComplete]);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#060b18] text-slate-100">

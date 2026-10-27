@@ -50,11 +50,21 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid rgba(56, 189, 248, 0.14);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.glass-panel:hover {
+  border-color: rgba(56, 189, 248, 0.28);
 }
 
 .glass-surface {
   background: rgba(10, 18, 36, 0.88);
   border: 1px solid rgba(148, 163, 184, 0.14);
+  transition: border-color 0.25s ease;
+}
+
+.glass-surface:hover {
+  border-color: rgba(148, 163, 184, 0.28);
 }
 
 @keyframes orbitSpinSlow {
@@ -94,6 +104,37 @@
   }
 }
 
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes glowPulse {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(56, 189, 248, 0.12), inset 0 0 15px rgba(56, 189, 248, 0.04);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(56, 189, 248, 0.32), inset 0 0 20px rgba(56, 189, 248, 0.12);
+  }
+}
+
 .orbit-slow {
   transform-origin: 110px 110px;
   animation: orbitSpinSlow 20s linear infinite;
@@ -108,11 +149,57 @@
   animation: floatNode 3.2s ease-in-out infinite;
 }
 
+.animate-fade-in-up {
+  animation: fadeInUp 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in-scale {
+  animation: fadeInScale 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-glow-pulse {
+  animation: glowPulse 4s ease-in-out infinite;
+}
+
+/* Scroll Animation Utilities */
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.65s cubic-bezier(0.16, 1, 0.3, 1), transform 0.65s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.scroll-reveal.is-visible,
+.scroll-reveal-child.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.scroll-reveal-child {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.hover-lift {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 14px 30px -6px rgba(14, 165, 233, 0.22);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  .scroll-reveal {
+    opacity: 1 !important;
+    transform: none !important;
   }
 }

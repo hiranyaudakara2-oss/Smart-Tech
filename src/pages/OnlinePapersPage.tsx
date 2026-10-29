@@ -1,95 +1,60 @@
-import React, { useMemo, useState } from 'react';
-import {
-  CheckCircle2,
-  Clock,
-  ExternalLink,
-  KeyRound,
-  Lock,
-  ShieldCheck,
-  Trophy,
-} from 'lucide-react';
+import React, { useState } from 'react';
 import { usePlatform } from '../context/PlatformContext';
-import { ExamPortalModal } from '../components/SharedUI';
-import { ExamRunnerModal } from '../components/ExamRunnerModal';
-import { RankBoardView } from '../components/RankBoardView';
 import {
-  evaluateExamStatus,
-  formatColomboDateTime,
-  formatCountdown,
-  formatShortDate,
-} from '../utils/platformLogic';
+  Monitor,
+  Clock,
+  Play,
+  Trophy,
+  Eye,
+  X,
+  Loader2,
+  ExternalLink,
+  ShieldCheck,
+} from 'lucide-react';
+import { ExamRunnerModal } from '../components/ExamRunnerModal';
+import { ExamPortalModal } from '../components/SharedUI';
+import type { ExamAttempt, OnlineExam } from '../types/platform';
+import { evaluateExamSchedule, formatColomboDateTime } from '../utils/platformLogic';
 import {
   fetchAuthorizedExamFormUrl,
   recordUserResourceActivity,
 } from '../services/platformService';
-import type { ExamAttempt, OnlineExam } from '../types/platform';
-
-type PortalViewTab = 'exams' | 'my-results' | 'rank-board';
 
 export function OnlinePapersPage() {
   const {
     publishedExams,
-    publishedRankEntries,
-    publishedCustomRankEntries,
-    myExamAttempts,
-    dataLoading,
     serverNowMs,
     firebaseUser,
-    userProfile,
-    isVerifiedAdmin,
     signInWithGoogle,
+    myExamAttempts,
     navigate,
     pushToast,
   } = usePlatform();
 
-  const [viewTab, setViewTab] = useState<PortalViewTab>('exams');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'upcoming' | 'closed'>('all');
-  const [openingExamId, setOpeningExamId] = useState<string | null>(null);
+  const [activeExam, setActiveExam] = useState<OnlineExam | null>(null);
+  const [googleFormPortal, setGoogleFormPortal] = useState<{
+    exam: OnlineExam;
+    formUrl: string;
+  } | null>(null);
+  const [loadingFormExamId, setLoadingFormExamId] = useState<string | null>(null);
+  const [reviewingAttempt, setReviewingAttempt] = useState<{
+    exam: OnlineExam;
+    attempt: ExamAttempt;
+  } | null>(null);
 
-  const [portalExam, setPortalExam] = useState<{ exam: OnlineExam; formUrl: string } | null>(null);
-  const [nativeRunnerExam, setNativeRunnerExam] = useState<OnlineExam | null>(null);
-  const [selectedAttemptDetail, setSelectedAttemptDetail] = useState<ExamAttempt | null>(null);
-
-  const filteredExams = useMemo(() => {
-    return publishedExams.filter((exam) => {
-      if (statusFilter === 'all') return true;
-      const ev = evaluateExamStatus(exam.opensAtMs, exam.closesAtMs, serverNowMs);
-      return ev.state === statusFilter;
-    });
-  }, [publishedExams, statusFilter, serverNowMs]);
-
-  const completedAttempts = useMemo(
-    () => myExamAttempts.filter((a) => a.status !== 'in_progress'),
-    [myExamAttempts]
-  );
-
-  const handleOpenExamination = async (exam: OnlineExam) => {
-    const check = evaluateExamStatus(exam.opensAtMs, exam.closesAtMs, serverNowMs);
-    if (!check.canAccessForm) {
-      pushToast('error', 'Examination unavailable', check.statusMessage);
+  const handleStartClick = async (exam: OnlineExam) => {
+    if (!firebaseUser) {
+      await signInWithGoogle('online-papers');
       return;
     }
 
-    if (exam.examMode === 'native') {
-      if (!firebaseUser || !userProfile) {
-        pushToast(
-          'info',
-          'Student sign-in required',
-          'Sign in with Google so your timed examination attempt and rank standing can be recorded.'
-        );
-        await signInWithGoogle('online-papers');
-        return;
-      }
-      setNativeRunnerExam(exam);
-      return;
-    }
-
-    setOpeningExamId(exam.id);
-    try {
-      const authorizedUrl = await fetchAuthorizedExamFormUrl(exam.id);
-      setPortalExam({ exam, formUrl: authorizedUrl });
-
-      if (firebaseUser) {
+    if (exam.examMode === 'google_form') {
+      setLoadingFormExamId(exam.id);
+      try {
+        const formUrl = await fetchAuthorizedExamFormUrl(exam.id);
+        if (!formUrl) {
+          throw new Error('No Google Form link is configured for this examination.');
+        }
         recordUserResourceActivity({
           userId: firebaseUser.uid,
           resourceId: exam.id,
@@ -98,502 +63,307 @@ export function OnlinePapersPage() {
           subject: exam.subject,
           action: 'opened_exam',
         }).catch(() => undefined);
+        setGoogleFormPortal({ exam, formUrl });
+      } catch (err) {
+        pushToast(
+          'error',
+          'Unable to open examination form',
+          err instanceof Error ? err.message : 'Please try again during the scheduled window.'
+        );
+      } finally {
+        setLoadingFormExamId(null);
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to unlock examination link.';
-      pushToast('error', 'Schedule verification rejected access', msg);
-    } finally {
-      setOpeningExamId(null);
+      return;
     }
+
+    // Native timed exam: open ExamRunnerModal directly (no duplicate passcode modal)
+    setActiveExam(exam);
   };
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="font-display text-3xl font-bold text-slate-50">
-            Online Examinations &amp; Official Rank Board
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-400">
-            Sit 6-digit password-protected timed examinations with automatic server marking, review
-            your personal scores, and view official competition rankings in Asia/Colombo time.
-          </p>
-        </div>
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
+      <header className="space-y-3">
+        <h1 className="text-3xl font-extrabold text-white flex items-center gap-3">
+          <Monitor className="h-8 w-8 text-indigo-400" />
+          <span>Online Timed Examination System</span>
+        </h1>
+        <p className="text-slate-300 text-sm sm:text-base max-w-3xl">
+          Sit interactive online examinations directly on any device or browser with automated server grading, live countdown timers, auto-saved drafts, and official rank board entry.
+        </p>
+      </header>
 
-        <div className="glass-surface rounded-xl px-4 py-2.5 text-right">
-          <p className="text-[11px] text-slate-400">Authoritative Server Clock</p>
-          <p className="font-mono text-xs font-medium text-cyan-300 tabular-nums">
-            {formatColomboDateTime(serverNowMs)}
-          </p>
+      {/* Available Exams Grid */}
+      {publishedExams.length === 0 ? (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center text-slate-400">
+          No online examinations are currently published.
         </div>
-      </div>
+      ) : (
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {publishedExams.map((exam) => {
+            const evalRes = evaluateExamSchedule(exam, serverNowMs);
+            const examAttempts = myExamAttempts.filter((a) => a.examId === exam.id);
+            const activeInProgress = examAttempts.find(
+              (a) => a.status === 'in_progress' && a.expiresAtMs > serverNowMs
+            );
+            const completedAttempts = examAttempts.filter((a) => a.status !== 'in_progress');
+            const latestCompleted = completedAttempts[0] || null;
+            const maxAttempts = Math.max(1, exam.maxAttempts || 1);
+            const attemptsExhausted =
+              exam.examMode === 'native' &&
+              !activeInProgress &&
+              completedAttempts.length >= maxAttempts;
+            const isOpeningForm = loadingFormExamId === exam.id;
 
-      {/* Primary Section Switcher */}
-      <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+            return (
+              <div
+                key={exam.id}
+                className="glass-panel flex flex-col justify-between rounded-2xl border border-indigo-500/20 bg-slate-900/80 p-6 transition-all hover:border-indigo-500/40"
+              >
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="rounded-full bg-indigo-500/10 px-3 py-1 font-semibold text-indigo-300 border border-indigo-500/20">
+                      {exam.subject}
+                    </span>
+                    <span
+                      className={`font-semibold text-right ${
+                        evalRes.state === 'open'
+                          ? 'text-emerald-400'
+                          : evalRes.state === 'upcoming'
+                          ? 'text-amber-400'
+                          : 'text-rose-400'
+                      }`}
+                    >
+                      {evalRes.state === 'open'
+                        ? 'Open Now'
+                        : evalRes.state === 'upcoming'
+                        ? 'Upcoming'
+                        : 'Closed'}
+                    </span>
+                  </div>
+
+                  <h3 className="font-bold text-lg text-white line-clamp-2">{exam.title}</h3>
+                  <p className="text-xs text-slate-300 line-clamp-3">{exam.description}</p>
+
+                  {exam.examMode === 'native' ? (
+                    <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 pt-2 border-t border-slate-800">
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="h-3.5 w-3.5 text-indigo-400" />
+                        <span>{exam.durationMinutes} mins</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Trophy className="h-3.5 w-3.5 text-amber-400" />
+                        <span>{exam.totalMarks} marks</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-cyan-300 pt-2 border-t border-slate-800">
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>Scheduled Google Forms Paper</span>
+                    </div>
+                  )}
+
+                  <div className="text-[11px] text-slate-400 space-y-0.5">
+                    <p>Opens: {formatColomboDateTime(exam.opensAtMs)}</p>
+                    <p>Closes: {formatColomboDateTime(exam.closesAtMs)}</p>
+                  </div>
+
+                  {activeInProgress && (
+                    <div className="rounded-xl border border-cyan-400/35 bg-cyan-950/30 p-3 text-xs text-cyan-200">
+                      Active attempt in progress — your saved answers and remaining timer are ready to resume.
+                    </div>
+                  )}
+
+                  {latestCompleted && (
+                    <div className="rounded-xl bg-slate-800/60 p-3 text-xs space-y-1.5 border border-slate-700">
+                      {latestCompleted.status === 'pending_review' ? (
+                        <div className="flex items-center justify-between text-amber-300 font-semibold">
+                          <span>Marking Status:</span>
+                          <span>Pending Instructor Review</span>
+                        </div>
+                      ) : !latestCompleted.resultsPublished && !exam.resultsPublished ? (
+                        <div className="flex items-center justify-between text-cyan-300 font-semibold">
+                          <span>Submission Recorded:</span>
+                          <span>Awaiting Result Release</span>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between text-slate-300">
+                            <span>Your Result:</span>
+                            <span className="font-bold text-white">
+                              {latestCompleted.marksObtained} / {latestCompleted.totalMarks} (
+                              {latestCompleted.percentage}%)
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span>Outcome:</span>
+                            <span
+                              className={`font-semibold ${
+                                latestCompleted.passed ? 'text-emerald-400' : 'text-rose-400'
+                              }`}
+                            >
+                              {latestCompleted.passed ? 'PASSED' : 'NEEDS REVISION'}
+                            </span>
+                          </div>
+                          {latestCompleted.reviewBreakdown &&
+                            latestCompleted.reviewBreakdown.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setReviewingAttempt({ exam, attempt: latestCompleted })
+                                }
+                                className="mt-1 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-600 bg-slate-900/80 py-1.5 text-[11px] font-semibold text-cyan-300 hover:border-cyan-400/50 hover:text-cyan-200"
+                              >
+                                <Eye className="h-3.5 w-3.5" />
+                                <span>View Question Breakdown</span>
+                              </button>
+                            )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="pt-6 border-t border-slate-800 mt-6">
+                  <button
+                    type="button"
+                    onClick={() => handleStartClick(exam)}
+                    disabled={evalRes.state !== 'open' || attemptsExhausted || isOpeningForm}
+                    className={`w-full inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold text-white shadow-md transition-all ${
+                      evalRes.state === 'open' && !attemptsExhausted
+                        ? 'bg-gradient-to-r from-indigo-500 to-cyan-500 shadow-indigo-500/20 hover:from-indigo-400 hover:to-cyan-400'
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                    }`}
+                  >
+                    {isOpeningForm ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="h-4 w-4" />
+                    )}
+                    <span>
+                      {!firebaseUser && evalRes.state === 'open'
+                        ? 'Sign In & Start Exam'
+                        : activeInProgress
+                        ? 'Resume In-Progress Exam'
+                        : attemptsExhausted
+                        ? `Attempts Completed (${completedAttempts.length}/${maxAttempts})`
+                        : latestCompleted
+                        ? `Retake Examination (${completedAttempts.length}/${maxAttempts})`
+                        : exam.examMode === 'google_form'
+                        ? 'Open Scheduled Exam Form'
+                        : 'Start Online Exam'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Active Native Exam Runner Modal */}
+      {activeExam && (
+        <ExamRunnerModal
+          open={Boolean(activeExam)}
+          exam={activeExam}
+          onClose={() => setActiveExam(null)}
+          onOpenRankBoard={() => navigate('home')}
+        />
+      )}
+
+      {/* Scheduled Google Forms Exam Modal */}
+      {googleFormPortal && (
+        <ExamPortalModal
+          open={Boolean(googleFormPortal)}
+          title={googleFormPortal.exam.title}
+          subject={googleFormPortal.exam.subject}
+          formUrl={googleFormPortal.formUrl}
+          onClose={() => setGoogleFormPortal(null)}
+        />
+      )}
+
+      {/* Completed Result Breakdown Modal */}
+      {reviewingAttempt && (
         <div
-          role="tablist"
-          aria-label="Online examination portal views"
-          className="flex flex-wrap items-center gap-2"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Result Breakdown: ${reviewingAttempt.exam.title}`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-6"
         >
-          <button
-            role="tab"
-            type="button"
-            aria-selected={viewTab === 'exams'}
-            onClick={() => setViewTab('exams')}
-            className={`rounded-lg px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-              viewTab === 'exams'
-                ? 'bg-sky-500 text-slate-950'
-                : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            Available Examinations ({publishedExams.length})
-          </button>
-          <button
-            role="tab"
-            type="button"
-            aria-selected={viewTab === 'my-results'}
-            onClick={() => setViewTab('my-results')}
-            className={`rounded-lg px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-              viewTab === 'my-results'
-                ? 'bg-sky-500 text-slate-950'
-                : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            My Examination Results ({completedAttempts.length})
-          </button>
-          <button
-            role="tab"
-            type="button"
-            aria-selected={viewTab === 'rank-board'}
-            onClick={() => setViewTab('rank-board')}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-              viewTab === 'rank-board'
-                ? 'bg-sky-500 text-slate-950'
-                : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            <Trophy className="h-3.5 w-3.5" aria-hidden="true" />
-            Official Rank Board ({publishedRankEntries.length + publishedCustomRankEntries.length})
-          </button>
-        </div>
-
-        {isVerifiedAdmin && (
-          <button
-            type="button"
-            onClick={() => navigate('admin')}
-            className="text-xs font-semibold text-cyan-300 hover:text-cyan-200 whitespace-nowrap"
-          >
-            Create Exam, 6-Digit Password &amp; Rank Board in Admin →
-          </button>
-        )}
-      </div>
-
-      {/* TAB 1: AVAILABLE EXAMINATIONS */}
-      {viewTab === 'exams' && (
-        <>
-          <div className="glass-surface mt-6 rounded-2xl p-5">
-            <div className="flex items-start gap-3">
-              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" aria-hidden="true" />
-              <div className="text-xs leading-relaxed text-slate-300">
-                <p className="font-semibold text-slate-100">
-                  6-Digit Password Gate, Server Countdown &amp; Automatic Marking Policy
-                </p>
-                <p className="mt-1 text-slate-400">
-                  Interactive Smart Tech examinations require a verified student Google account and
-                  the 6-digit numeric access password issued by your instructor. Answer keys never
-                  leave the server before results release, countdown timers automatically submit at
-                  00:00, and finalized scores feed directly into the Official Rank Board. External
-                  Google Forms examinations remain protected by Firestore server schedule locks.
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-700 bg-slate-900 p-5 sm:p-6 space-y-5 max-h-[90dvh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>Verified Examination Result</span>
+                </div>
+                <h2 className="mt-1 text-lg sm:text-xl font-bold text-white">
+                  {reviewingAttempt.exam.title}
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Score: {reviewingAttempt.attempt.marksObtained} /{' '}
+                  {reviewingAttempt.attempt.totalMarks} ({reviewingAttempt.attempt.percentage}%)
                 </p>
               </div>
-            </div>
-          </div>
-
-          {/* Schedule Status Filter */}
-          <div className="mt-6 flex flex-wrap items-center gap-1.5">
-            {(
-              [
-                { key: 'all', label: 'All Examinations' },
-                { key: 'open', label: 'Currently Open' },
-                { key: 'upcoming', label: 'Upcoming' },
-                { key: 'closed', label: 'Closed' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setStatusFilter(tab.key)}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  statusFilter === tab.key
-                    ? 'bg-sky-500/20 border border-sky-400/50 text-cyan-200 font-semibold'
-                    : 'bg-slate-900/80 text-slate-300 hover:text-white'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {dataLoading ? (
-            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-              {[1, 2].map((i) => (
-                <div key={i} className="glass-surface h-64 animate-pulse rounded-2xl p-6" />
-              ))}
-            </div>
-          ) : filteredExams.length === 0 ? (
-            <div className="glass-surface mt-6 rounded-2xl p-10 text-center">
-              <h2 className="text-base font-semibold text-slate-100">
-                No online examinations in this category
-              </h2>
-              <p className="mx-auto mt-2 max-w-md text-sm text-slate-400">
-                {publishedExams.length === 0
-                  ? 'No online examinations have been published yet. Administrators can create interactive 6-digit password examinations in the Admin Dashboard.'
-                  : 'Switch to "All Examinations" to view upcoming or completed examination windows.'}
-              </p>
-            </div>
-          ) : (
-            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-              {filteredExams.map((exam) => {
-                const evaluation = evaluateExamStatus(exam.opensAtMs, exam.closesAtMs, serverNowMs);
-                const isUnlocking = openingExamId === exam.id;
-                const usedAttempts = myExamAttempts.filter(
-                  (a) => a.examId === exam.id && a.status !== 'in_progress'
-                ).length;
-                const attemptsExhausted =
-                  exam.examMode === 'native' && Boolean(firebaseUser) && usedAttempts >= exam.maxAttempts;
-
-                return (
-                  <article
-                    key={exam.id}
-                    className="glass-surface flex flex-col justify-between rounded-2xl p-6"
-                  >
-                    <div>
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-cyan-300">{exam.subject}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>{exam.grade}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>
-                            {exam.examMode === 'native'
-                              ? '6-Digit Password · Auto-Graded'
-                              : 'Google Forms'}
-                          </span>
-                        </div>
-                        <span
-                          className={`font-medium ${
-                            evaluation.state === 'open'
-                              ? 'text-emerald-300'
-                              : evaluation.state === 'upcoming'
-                              ? 'text-amber-300'
-                              : 'text-slate-400'
-                          }`}
-                        >
-                          {evaluation.state === 'open'
-                            ? 'Active Window'
-                            : evaluation.state === 'upcoming'
-                            ? 'Scheduled'
-                            : 'Ended'}
-                        </span>
-                      </div>
-
-                      <h2 className="mt-2 text-lg font-semibold text-slate-50">{exam.title}</h2>
-                      <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                        {exam.description}
-                      </p>
-
-                      {exam.examMode === 'native' && (
-                        <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300 tabular-nums">
-                          <span>
-                            Questions:{' '}
-                            <strong className="font-mono text-slate-100">{exam.questionCount}</strong>
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span>
-                            Total Marks:{' '}
-                            <strong className="font-mono text-slate-100">{exam.totalMarks}</strong>
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span>
-                            Duration:{' '}
-                            <strong className="font-mono text-cyan-300">
-                              {exam.durationMinutes} min
-                            </strong>
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span>
-                            Max Attempts:{' '}
-                            <strong className="font-mono text-slate-100">{exam.maxAttempts}</strong>
-                          </span>
-                        </div>
-                      )}
-
-                      <div className="mt-4 rounded-xl border border-slate-800/90 bg-[#060b18]/80 p-3.5 text-xs text-slate-300">
-                        <p className="font-medium text-slate-200">Candidate Instructions</p>
-                        <p className="mt-1 text-slate-400">{exam.instructions}</p>
-                      </div>
-
-                      <dl className="mt-4 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
-                        <div className="rounded-lg bg-slate-900/60 px-3 py-2">
-                          <dt className="text-slate-400">Scheduled Opening</dt>
-                          <dd className="mt-0.5 font-mono text-slate-100 tabular-nums">
-                            {formatColomboDateTime(exam.opensAtMs)}
-                          </dd>
-                        </div>
-                        <div className="rounded-lg bg-slate-900/60 px-3 py-2">
-                          <dt className="text-slate-400">Scheduled Closing</dt>
-                          <dd className="mt-0.5 font-mono text-slate-100 tabular-nums">
-                            {formatColomboDateTime(exam.closesAtMs)}
-                          </dd>
-                        </div>
-                      </dl>
-                    </div>
-
-                    {/* Schedule Enforcement Action Zone */}
-                    <div className="mt-6 border-t border-slate-800/80 pt-4">
-                      {evaluation.state === 'upcoming' && (
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 text-sm text-amber-300">
-                            <Lock className="h-4 w-4 shrink-0" aria-hidden="true" />
-                            <span>This examination has not opened yet.</span>
-                          </div>
-                          <span className="font-mono text-xs font-semibold text-slate-200 tabular-nums">
-                            Opens in {formatCountdown(evaluation.remainingMs)}
-                          </span>
-                        </div>
-                      )}
-
-                      {evaluation.state === 'open' && (
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 text-xs text-emerald-300 tabular-nums">
-                            <Clock className="h-4 w-4 shrink-0" aria-hidden="true" />
-                            <span>Closes in {formatCountdown(evaluation.remainingMs)}</span>
-                          </div>
-
-                          {attemptsExhausted ? (
-                            <button
-                              type="button"
-                              onClick={() => setViewTab('my-results')}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-4 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-900/40 whitespace-nowrap"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              Completed ({usedAttempts}/{exam.maxAttempts}) · View Result
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={isUnlocking}
-                              onClick={() => handleOpenExamination(exam)}
-                              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-50 whitespace-nowrap shrink-0"
-                            >
-                              {exam.examMode === 'native' ? (
-                                <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                              ) : (
-                                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                              )}
-                              {isUnlocking
-                                ? 'Verifying Schedule...'
-                                : exam.examMode === 'native'
-                                ? 'Enter 6-Digit Password & Start'
-                                : 'Open Examination'}
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {evaluation.state === 'closed' && (
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-slate-400">
-                            This examination is now closed.
-                          </p>
-                          {exam.rankBoardPublished ? (
-                            <button
-                              type="button"
-                              onClick={() => setViewTab('rank-board')}
-                              className="rounded-lg border border-sky-400/40 bg-sky-500/10 px-3.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-sky-500/20"
-                            >
-                              View Rank Board
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled
-                              className="cursor-not-allowed rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-2 text-xs font-medium text-slate-500"
-                            >
-                              Closed
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* TAB 2: STUDENT PERSONAL EXAMINATION RESULTS */}
-      {viewTab === 'my-results' && (
-        <div className="mt-6">
-          {!firebaseUser ? (
-            <div className="glass-surface rounded-2xl p-10 text-center">
-              <h2 className="text-base font-semibold text-slate-100">
-                Sign in to view your personal examination results
-              </h2>
-              <p className="mx-auto mt-2 max-w-md text-sm text-slate-400">
-                Authenticate with your student Google account to view your submitted attempts,
-                marks, percentages, and question breakdowns.
-              </p>
               <button
                 type="button"
-                onClick={() => signInWithGoogle('online-papers')}
-                className="mt-5 rounded-lg bg-sky-500 px-5 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400"
+                onClick={() => setReviewingAttempt(null)}
+                aria-label="Close result breakdown"
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
               >
-                Sign in with Google
+                <X className="h-5 w-5" />
               </button>
             </div>
-          ) : completedAttempts.length === 0 ? (
-            <div className="glass-surface rounded-2xl p-10 text-center">
-              <h2 className="text-base font-semibold text-slate-100">
-                No completed examination attempts yet
-              </h2>
-              <p className="mx-auto mt-2 max-w-md text-sm text-slate-400">
-                Once you sit and submit a native online examination, your marks and itemized review
-                will appear here.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {completedAttempts.map((att) => (
+
+            <div className="space-y-3">
+              {(reviewingAttempt.attempt.reviewBreakdown || []).map((item, idx) => (
                 <div
-                  key={att.id}
-                  className="glass-surface flex flex-col justify-between gap-4 rounded-2xl p-5 sm:flex-row sm:items-center"
+                  key={item.questionId}
+                  className="rounded-xl border border-slate-800 bg-slate-950/80 p-4 text-xs space-y-1.5"
                 >
-                  <div>
-                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
-                      <span className="text-cyan-300">{att.subject}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">Attempt #{att.attemptNumber}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">
-                        {formatShortDate(att.submittedAtMs)}
-                      </span>
-                    </div>
-                    <h3 className="mt-1 text-base font-semibold text-slate-50">{att.examTitle}</h3>
-                    <p className="mt-1 text-xs text-slate-400">
-                      {att.status === 'pending_review'
-                        ? 'Submitted · Pending instructor evaluation of short-answer responses'
-                        : !att.resultsPublished
-                        ? 'Submitted & Graded · Awaiting official results release by administrator'
-                        : att.passed
-                        ? 'Finalized · Passed'
-                        : 'Finalized · Below passing threshold'}
-                    </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-200">Question {idx + 1}</span>
+                    <span
+                      className={`font-mono font-semibold ${
+                        item.isCorrect === true
+                          ? 'text-emerald-300'
+                          : item.isCorrect === false
+                          ? 'text-rose-300'
+                          : 'text-amber-300'
+                      }`}
+                    >
+                      {item.marksAwarded} / {item.maxMarks} marks
+                    </span>
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-4 shrink-0">
-                    {att.status === 'graded' && att.resultsPublished && (
-                      <div className="text-right font-mono tabular-nums">
-                        <p className="text-lg font-bold text-slate-50">
-                          {att.marksObtained} / {att.totalMarks}
-                        </p>
-                        <p className="text-xs font-semibold text-cyan-300">{att.percentage}%</p>
-                      </div>
-                    )}
-                    {att.resultsPublished && (att.reviewBreakdown || []).length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setSelectedAttemptDetail(
-                            selectedAttemptDetail?.id === att.id ? null : att
-                          )
-                        }
-                        className="rounded-lg border border-slate-700 px-3.5 py-2 text-xs font-medium text-slate-200 hover:border-sky-400/50 hover:text-white"
-                      >
-                        {selectedAttemptDetail?.id === att.id ? 'Hide Breakdown' : 'View Breakdown'}
-                      </button>
-                    )}
-                  </div>
+                  <p className="text-sm text-slate-100">{item.prompt}</p>
+                  <p className="text-slate-300">
+                    <span className="text-slate-400">Your answer: </span>
+                    {item.studentAnswer || 'Unanswered'}
+                  </p>
+                  {reviewingAttempt.exam.showExplanations && (
+                    <>
+                      <p className="text-cyan-300">
+                        <span className="text-slate-400">Expected answer: </span>
+                        {item.correctAnswerLabel}
+                      </p>
+                      {item.explanation && <p className="text-slate-400">{item.explanation}</p>}
+                    </>
+                  )}
                 </div>
               ))}
-
-              {selectedAttemptDetail && selectedAttemptDetail.resultsPublished && (
-                <div className="glass-panel rounded-2xl p-6">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                    <h3 className="text-base font-semibold text-slate-50">
-                      Answer Review: {selectedAttemptDetail.examTitle}
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedAttemptDetail(null)}
-                      className="text-xs text-slate-400 hover:text-white"
-                    >
-                      Close
-                    </button>
-                  </div>
-                  <div className="mt-4 space-y-3">
-                    {(selectedAttemptDetail.reviewBreakdown || []).map((item, idx) => (
-                      <div
-                        key={item.questionId}
-                        className="rounded-xl border border-slate-800 bg-[#060b18]/80 p-4 text-xs"
-                      >
-                        <div className="flex justify-between gap-2">
-                          <span className="font-semibold text-slate-200">Question {idx + 1}</span>
-                          <span className="font-mono font-semibold text-cyan-300 tabular-nums">
-                            {item.marksAwarded} / {item.maxMarks} marks
-                          </span>
-                        </div>
-                        <p className="mt-1.5 text-sm text-slate-100">{item.prompt}</p>
-                        <p className="mt-2 text-slate-300">
-                          <span className="text-slate-400">Your answer: </span>
-                          {item.studentAnswer}
-                        </p>
-                        <p className="mt-1 text-cyan-300">
-                          <span className="text-slate-400">Expected: </span>
-                          {item.correctAnswerLabel}
-                        </p>
-                        {item.explanation && (
-                          <p className="mt-1 text-slate-400">{item.explanation}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
-          )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setReviewingAttempt(null)}
+                className="rounded-xl bg-sky-500 px-5 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400"
+              >
+                Close Review
+              </button>
+            </div>
+          </div>
         </div>
       )}
-
-      {/* TAB 3: OFFICIAL PUBLIC RANK BOARD */}
-      {viewTab === 'rank-board' && (
-        <div className="mt-6">
-          <RankBoardView
-            entries={publishedRankEntries}
-            exams={publishedExams}
-            loading={dataLoading}
-          />
-        </div>
-      )}
-
-      {/* Google Forms Modal */}
-      <ExamPortalModal
-        open={Boolean(portalExam)}
-        title={portalExam?.exam.title || ''}
-        subject={portalExam?.exam.subject || ''}
-        formUrl={portalExam?.formUrl || ''}
-        onClose={() => setPortalExam(null)}
-      />
-
-      {/* Native 6-Digit Password Interactive Exam Runner Modal */}
-      <ExamRunnerModal
-        open={Boolean(nativeRunnerExam)}
-        exam={nativeRunnerExam}
-        onClose={() => setNativeRunnerExam(null)}
-        onOpenRankBoard={() => setViewTab('rank-board')}
-      />
     </div>
   );
 }

@@ -1,0 +1,32 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  node_bundler = "esbuild"
+  included_files = ["firebase-applet-config.json"]
+
+# Route all backend /api/* calls to the stateless Netlify Serverless Function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback so refreshing any route or returning from Google Sign-In redirect works on every browser
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Allow Google Sign-In popups across Safari, Chrome, Edge, and Firefox without COOP blocking
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin-allow-popups"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

@@ -1,59 +1,41 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import {
-  BarChart3,
-  Bell,
-  BookOpen,
-  ClipboardCheck,
-  Database,
-  Edit3,
-  ExternalLink,
-  FileSpreadsheet,
-  FileText,
-  Image as ImageIcon,
-  LayoutDashboard,
-  Link2,
-  Loader2,
-  LogOut,
-  RefreshCw,
-  Settings,
-  ShieldCheck,
-  Trash2,
-  Trophy,
-  Upload,
-  Users,
-} from 'lucide-react';
+import React, { useMemo, useState } from 'react';
 import { usePlatform } from '../context/PlatformContext';
-import { ConfirmDialog, ResilientImage } from '../components/SharedUI';
 import { AdminLoginGate } from '../components/AdminLoginGate';
-import {
-  AdminExamResultsPanel,
-  AdminOnlineExamManagementPanel,
-} from '../components/AdminExamManager';
+import { AdminExamManager, AdminExamResultsPanel } from '../components/AdminExamManager';
 import { AdminRankBoardManager } from '../components/AdminRankBoardManager';
-import { VISUAL_ASSETS } from '../assets/visualCatalog';
-import { FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from '../lib/firebase';
+import { ConfirmDialog, ResilientImage } from '../components/SharedUI';
 import {
-  formatBytes,
-  formatColomboDateTime,
-  formatShortDate,
-  getResourceTargetUrl,
-  isGoogleDriveResource,
-  parseTagsInput,
-  validateGoogleDriveUrl,
-  validateNoteFormInput,
-  validatePaperFormInput,
-} from '../utils/platformLogic';
+  ShieldCheck,
+  BookOpen,
+  FileText,
+  Monitor,
+  Bell,
+  Trophy,
+  Plus,
+  Trash2,
+  Edit2,
+  Eye,
+  EyeOff,
+  Search,
+  CheckCircle2,
+  AlertCircle,
+  Upload,
+  Link as LinkIcon,
+  KeyRound,
+  Loader2,
+  Sparkles,
+  Users,
+  X,
+} from 'lucide-react';
 import {
-  configureAdminSecondaryPassphrase,
   createAnnouncementDocument,
   createNoteDocument,
   createPaperDocument,
   deleteAnnouncementDocument,
   deleteNoteDocument,
   deletePaperDocument,
-  fetchAdminSecuritySettingsStatus,
   grantAdminPrivilege,
-  reconcilePlatformStats,
+  linkAdminPasswordToGoogleAccount,
   revokeAdminPrivilege,
   seedStarterCurriculumByAdmin,
   updateAnnouncementDocument,
@@ -62,210 +44,505 @@ import {
   uploadNoticeImageFile,
   uploadValidatedPdfFile,
 } from '../services/platformService';
+import {
+  formatBytes,
+  isGoogleDriveResource,
+  normalizeAnnouncementImageUrl,
+  parseTagsInput,
+  validateGoogleDriveUrl,
+} from '../utils/platformLogic';
+import { BOOTSTRAPPED_ADMIN_EMAIL, FIREBASE_PROJECT_ID } from '../lib/firebase';
 import type {
   Announcement,
   AnnouncementCategory,
   AnnouncementPriority,
   ExamPaper,
   NoteResource,
-  ResourceSourceType,
 } from '../types/platform';
 
-type AdminSectionId =
-  | 'overview'
-  | 'users'
-  | 'announcements'
-  | 'notes'
-  | 'papers'
-  | 'exams'
-  | 'results'
-  | 'rank-board'
-  | 'statistics'
-  | 'settings';
+type AdminTab = 'notes' | 'papers' | 'exams' | 'announcements' | 'rankboards' | 'security';
 
-const SIDEBAR_SECTIONS: Array<{
-  id: AdminSectionId;
-  label: string;
-  Icon: React.ComponentType<{ className?: string }>;
-}> = [
-  { id: 'overview', label: 'Overview', Icon: LayoutDashboard },
-  { id: 'users', label: 'User Management', Icon: Users },
-  { id: 'announcements', label: 'Messages and Announcements', Icon: Bell },
-  { id: 'notes', label: 'Educational Notes', Icon: BookOpen },
-  { id: 'papers', label: 'PDF Paper Management', Icon: FileText },
-  { id: 'exams', label: 'Online Exam Management', Icon: ClipboardCheck },
-  { id: 'results', label: 'Examination Results', Icon: FileSpreadsheet },
-  { id: 'rank-board', label: 'Automatic Rank Board', Icon: Trophy },
-  { id: 'statistics', label: 'Website Statistics', Icon: BarChart3 },
-  { id: 'settings', label: 'Admin Settings', Icon: Settings },
+type PendingDeleteTarget =
+  | { kind: 'note'; item: NoteResource }
+  | { kind: 'paper'; item: ExamPaper }
+  | { kind: 'announcement'; item: Announcement }
+  | null;
+
+const SUBJECT_OPTIONS = [
+  'Engineering Technology',
+  'Biosystems Technology',
+  'ICT',
+  'Science for Technology',
+  'Science',
+  'Mathematics',
+];
+
+const ANNOUNCEMENT_CATEGORIES: AnnouncementCategory[] = [
+  'Important Announcement',
+  'Exam Notice',
+  'New Upload',
+  'General Notice',
 ];
 
 export function AdminPage() {
   const {
-    authReady,
     firebaseUser,
     isVerifiedAdmin,
     adminServerVerified,
-    logoutAdminSession,
-    stats,
+    signInWithGoogle,
+    navigate,
     allNotes,
     allPapers,
-    allExams,
     allAnnouncements,
-    allExamAttempts,
-    allRankEntries,
-    allRankBoards,
-    allCustomRankEntries,
     allUsers,
     allAdmins,
     auditLogs,
-    navigate,
     pushToast,
   } = usePlatform();
 
-  const [activeSection, setActiveSection] = useState<AdminSectionId>('overview');
-  const [seeding, setSeeding] = useState(false);
-  const [seededSampleCode, setSeededSampleCode] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<AdminTab>('notes');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [savingModal, setSavingModal] = useState(false);
+  const [seedingBusy, setSeedingBusy] = useState(false);
 
-  // User Management Search
-  const [userSearch, setUserSearch] = useState('');
+  // Shared Delete Confirm Dialog state (replaces window.confirm across all browsers/iframes)
+  const [deleteTarget, setDeleteTarget] = useState<PendingDeleteTarget>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
-  // Announcements & Important Popup Notice Form State
-  const [editingAnn, setEditingAnn] = useState<Announcement | null>(null);
-  const [annTitle, setAnnTitle] = useState('');
-  const [annBody, setAnnBody] = useState('');
-  const [annCategory, setAnnCategory] = useState<AnnouncementCategory>('Important Announcement');
-  const [annPriority, setAnnPriority] = useState<AnnouncementPriority>('urgent');
-  const [annIsImportant, setAnnIsImportant] = useState(true);
-  const [annImageUrl, setAnnImageUrl] = useState('');
-  const [annImageUploadPct, setAnnImageUploadPct] = useState<number | null>(null);
-  const [annPublished, setAnnPublished] = useState(true);
-  const [annBusy, setAnnBusy] = useState(false);
-
-  // Educational Notes Form State
+  // Note Modal state
+  const [showNoteModal, setShowNoteModal] = useState(false);
   const [editingNote, setEditingNote] = useState<NoteResource | null>(null);
   const [noteTitle, setNoteTitle] = useState('');
   const [noteSubject, setNoteSubject] = useState('Engineering Technology');
   const [noteGrade, setNoteGrade] = useState('Grade 13 (G.C.E. A/L)');
-  const [noteTagsInput, setNoteTagsInput] = useState('');
   const [noteDesc, setNoteDesc] = useState('');
-  const [noteThumb, setNoteThumb] = useState<string>(VISUAL_ASSETS.thumbEngineeringTech);
-  const [notePublished, setNotePublished] = useState(true);
-  const [noteSourceType, setNoteSourceType] = useState<ResourceSourceType>('drive');
+  const [noteTags, setNoteTags] = useState('');
+  const [noteSourceType, setNoteSourceType] = useState<'pdf' | 'drive'>('pdf');
   const [noteDriveUrl, setNoteDriveUrl] = useState('');
-  const [noteFile, setNoteFile] = useState<File | null>(null);
-  const [noteUploadPct, setNoteUploadPct] = useState<number | null>(null);
-  const [noteError, setNoteError] = useState<string | null>(null);
-  const [noteBusy, setNoteBusy] = useState(false);
+  const [notePdfUrl, setNotePdfUrl] = useState('');
+  const [noteStoragePath, setNoteStoragePath] = useState('');
+  const [noteFileName, setNoteFileName] = useState('');
+  const [noteFileSize, setNoteFileSize] = useState(0);
+  const [noteUploadProgress, setNoteUploadProgress] = useState<number | null>(null);
+  const [notePublished, setNotePublished] = useState(true);
 
-  // PDF Paper Management Form State
+  // Paper Modal state
+  const [showPaperModal, setShowPaperModal] = useState(false);
   const [editingPaper, setEditingPaper] = useState<ExamPaper | null>(null);
   const [paperTitle, setPaperTitle] = useState('');
   const [paperSubject, setPaperSubject] = useState('Engineering Technology');
-  const [paperCategory, setPaperCategory] = useState('National Past Paper');
   const [paperYear, setPaperYear] = useState(new Date().getFullYear());
+  const [paperCategory, setPaperCategory] = useState('National Past Paper');
   const [paperGrade, setPaperGrade] = useState('Grade 13 (G.C.E. A/L)');
-  const [paperType, setPaperType] = useState('National A/L');
-  const [paperLang, setPaperLang] = useState('English');
+  const [paperLanguage, setPaperLanguage] = useState('English');
   const [paperDesc, setPaperDesc] = useState('');
-  const [paperPublished, setPaperPublished] = useState(true);
-  const [paperSourceType, setPaperSourceType] = useState<ResourceSourceType>('drive');
+  const [paperSourceType, setPaperSourceType] = useState<'pdf' | 'drive'>('pdf');
   const [paperDriveUrl, setPaperDriveUrl] = useState('');
-  const [paperFile, setPaperFile] = useState<File | null>(null);
-  const [paperUploadPct, setPaperUploadPct] = useState<number | null>(null);
-  const [paperError, setPaperError] = useState<string | null>(null);
-  const [paperBusy, setPaperBusy] = useState(false);
+  const [paperPdfUrl, setPaperPdfUrl] = useState('');
+  const [paperStoragePath, setPaperStoragePath] = useState('');
+  const [paperFileName, setPaperFileName] = useState('');
+  const [paperFileSize, setPaperFileSize] = useState(0);
+  const [paperUploadProgress, setPaperUploadProgress] = useState<number | null>(null);
+  const [paperPublished, setPaperPublished] = useState(true);
 
-  // Statistics State
-  const [reconcilingStats, setReconcilingStats] = useState(false);
+  // Announcement Modal state
+  const [showAnnModal, setShowAnnModal] = useState(false);
+  const [editingAnn, setEditingAnn] = useState<Announcement | null>(null);
+  const [annTitle, setAnnTitle] = useState('');
+  const [annBody, setAnnBody] = useState('');
+  const [annCategory, setAnnCategory] = useState<AnnouncementCategory>('Important Announcement');
+  const [annPriority, setAnnPriority] = useState<AnnouncementPriority>('normal');
+  const [annIsImportant, setAnnIsImportant] = useState(true);
+  const [annImageUrl, setAnnImageUrl] = useState('');
+  const [annImageUploading, setAnnImageUploading] = useState(false);
+  const [annImageUploadProgress, setAnnImageUploadProgress] = useState<number | null>(null);
+  const [annPublished, setAnnPublished] = useState(true);
 
-  // Delete Confirmation Modal
-  const [confirmState, setConfirmState] = useState<{
-    title: string;
-    description: string;
-    confirmLabel?: string;
-    action: () => Promise<void>;
-  } | null>(null);
-  const [confirmBusy, setConfirmBusy] = useState(false);
+  // Cross-Device Admin Password Sync state
+  const [syncPassword, setSyncPassword] = useState('');
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [roleBusyUid, setRoleBusyUid] = useState<string | null>(null);
 
-  const adminUidSet = useMemo(() => new Set(allAdmins.map((a) => a.uid)), [allAdmins]);
+  const normalizedQuery = searchTerm.trim().toLowerCase();
 
-  const filteredUsers = useMemo(() => {
-    const q = userSearch.trim().toLowerCase();
-    if (!q) return allUsers;
-    return allUsers.filter((u) =>
-      `${u.displayName} ${u.email} ${u.grade || ''} ${u.role}`.toLowerCase().includes(q)
+  const filteredNotes = useMemo(() => {
+    if (!normalizedQuery) return allNotes;
+    return allNotes.filter(
+      (n) =>
+        n.title.toLowerCase().includes(normalizedQuery) ||
+        n.subject.toLowerCase().includes(normalizedQuery) ||
+        n.description.toLowerCase().includes(normalizedQuery) ||
+        n.tags.some((t) => t.toLowerCase().includes(normalizedQuery))
     );
-  }, [allUsers, userSearch]);
+  }, [allNotes, normalizedQuery]);
 
-  if (!authReady) {
-    return (
-      <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6">
-        <div className="glass-surface h-64 animate-pulse rounded-2xl p-8" />
-      </div>
+  const filteredPapers = useMemo(() => {
+    if (!normalizedQuery) return allPapers;
+    return allPapers.filter(
+      (p) =>
+        p.title.toLowerCase().includes(normalizedQuery) ||
+        p.subject.toLowerCase().includes(normalizedQuery) ||
+        p.category.toLowerCase().includes(normalizedQuery) ||
+        String(p.year).includes(normalizedQuery)
     );
-  }
+  }, [allPapers, normalizedQuery]);
 
-  // Enforce Dedicated Administrator Login Gate unless verified on both Firebase & Server
-  if (!firebaseUser || !isVerifiedAdmin || !adminServerVerified) {
+  const filteredAnnouncements = useMemo(() => {
+    if (!normalizedQuery) return allAnnouncements;
+    return allAnnouncements.filter(
+      (a) =>
+        a.title.toLowerCase().includes(normalizedQuery) ||
+        a.body.toLowerCase().includes(normalizedQuery) ||
+        a.category.toLowerCase().includes(normalizedQuery)
+    );
+  }, [allAnnouncements, normalizedQuery]);
+
+  if (!isVerifiedAdmin || !adminServerVerified) {
     return <AdminLoginGate />;
   }
 
-  // =========================================================================
-  // Verified Administrator Action Handlers
-  // =========================================================================
+  const isPrimaryOwnerSignedIn =
+    (firebaseUser?.email || '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
 
-  const handleSeedStarterData = async () => {
-    setSeeding(true);
+  // ============================================================================
+  // Note Handlers
+  // ============================================================================
+  const handleOpenNoteModal = (note?: NoteResource) => {
+    setNoteUploadProgress(null);
+    if (note) {
+      const isDrive = isGoogleDriveResource(note);
+      setEditingNote(note);
+      setNoteTitle(note.title);
+      setNoteSubject(note.subject);
+      setNoteGrade(note.grade);
+      setNoteDesc(note.description);
+      setNoteTags(note.tags.join(', '));
+      setNoteSourceType(isDrive ? 'drive' : 'pdf');
+      setNoteDriveUrl(note.driveUrl || (isDrive ? note.pdfUrl : ''));
+      setNotePdfUrl(isDrive ? '' : note.pdfUrl || '');
+      setNoteStoragePath(note.storagePath || '');
+      setNoteFileName(note.fileName || '');
+      setNoteFileSize(note.fileSize || 0);
+      setNotePublished(note.published);
+    } else {
+      setEditingNote(null);
+      setNoteTitle('');
+      setNoteSubject('Engineering Technology');
+      setNoteGrade('Grade 13 (G.C.E. A/L)');
+      setNoteDesc('');
+      setNoteTags('');
+      setNoteSourceType('pdf');
+      setNoteDriveUrl('');
+      setNotePdfUrl('/api/curriculum-pdf/study-module.pdf?title=Study+Module');
+      setNoteStoragePath('');
+      setNoteFileName('study-module.pdf');
+      setNoteFileSize(0);
+      setNotePublished(true);
+    }
+    setShowNoteModal(true);
+  };
+
+  const handleNoteFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setNoteUploadProgress(5);
     try {
-      const { sampleExamCode } = await seedStarterCurriculumByAdmin();
-      setSeededSampleCode(sampleExamCode);
-      pushToast(
-        'success',
-        'Starter curriculum & native exam published',
-        `Sample 6-digit exam password: ${sampleExamCode}`
+      const uploaded = await uploadValidatedPdfFile(file, 'notes', (pct) =>
+        setNoteUploadProgress(pct)
       );
+      setNoteSourceType('pdf');
+      setNotePdfUrl(uploaded.pdfUrl);
+      setNoteStoragePath(uploaded.storagePath);
+      setNoteFileName(uploaded.fileName);
+      setNoteFileSize(uploaded.fileSize);
+      if (!noteTitle.trim()) {
+        setNoteTitle(file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' '));
+      }
+      pushToast('success', 'PDF Uploaded', `${file.name} (${formatBytes(uploaded.fileSize)}) ready.`);
     } catch (err) {
-      pushToast('error', 'Curriculum seed failed', err instanceof Error ? err.message : '');
+      pushToast(
+        'error',
+        'PDF Upload Failed',
+        err instanceof Error ? err.message : 'Unable to upload PDF.'
+      );
     } finally {
-      setSeeding(false);
+      setNoteUploadProgress(null);
     }
   };
 
-  // --- Announcements ---
-  const resetAnnForm = () => {
-    setEditingAnn(null);
-    setAnnTitle('');
-    setAnnBody('');
-    setAnnCategory('Important Announcement');
-    setAnnPriority('urgent');
-    setAnnIsImportant(true);
-    setAnnImageUrl('');
-    setAnnImageUploadPct(null);
-    setAnnPublished(true);
+  const handleSaveNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (noteSourceType === 'drive') {
+      const check = validateGoogleDriveUrl(noteDriveUrl);
+      if (!check.valid) {
+        pushToast('error', 'Invalid Google Drive Link', check.error || 'Check the link format.');
+        return;
+      }
+    } else if (!notePdfUrl.trim()) {
+      pushToast('error', 'Missing PDF', 'Upload a PDF file or enter a valid PDF URL.');
+      return;
+    }
+
+    setSavingModal(true);
+    try {
+      const tagsArr = parseTagsInput(noteTags);
+      if (editingNote) {
+        await updateNoteDocument(editingNote, {
+          title: noteTitle,
+          subject: noteSubject,
+          grade: noteGrade,
+          description: noteDesc,
+          tags: tagsArr,
+          sourceType: noteSourceType,
+          driveUrl: noteSourceType === 'drive' ? noteDriveUrl : '',
+          pdfUrl: noteSourceType === 'drive' ? noteDriveUrl : notePdfUrl,
+          storagePath: noteSourceType === 'drive' ? '' : noteStoragePath,
+          fileName: noteSourceType === 'drive' ? 'Google Drive Document' : noteFileName,
+          fileSize: noteSourceType === 'drive' ? 0 : noteFileSize,
+          published: notePublished,
+        });
+        pushToast('success', 'Note Updated', `Successfully updated note "${noteTitle}"`);
+      } else {
+        await createNoteDocument({
+          title: noteTitle,
+          subject: noteSubject,
+          grade: noteGrade,
+          description: noteDesc,
+          tags: tagsArr,
+          sourceType: noteSourceType,
+          driveUrl: noteSourceType === 'drive' ? noteDriveUrl : '',
+          pdfUrl: noteSourceType === 'drive' ? noteDriveUrl : notePdfUrl,
+          storagePath: noteSourceType === 'drive' ? '' : noteStoragePath,
+          fileName: noteSourceType === 'drive' ? 'Google Drive Document' : noteFileName,
+          fileSize: noteSourceType === 'drive' ? 0 : noteFileSize,
+          published: notePublished,
+        });
+        pushToast('success', 'Note Created', `Successfully created note "${noteTitle}"`);
+      }
+      setShowNoteModal(false);
+    } catch (err: any) {
+      pushToast('error', 'Operation Failed', err?.message || 'Failed to save note.');
+    } finally {
+      setSavingModal(false);
+    }
   };
 
-  const handleNoticeImageUpload = async (file: File | null) => {
-    if (!file) return;
-    setAnnImageUploadPct(10);
+  const handleToggleNotePublish = async (note: NoteResource) => {
     try {
-      const uploadedUrl = await uploadNoticeImageFile(file, (pct) => setAnnImageUploadPct(pct));
-      setAnnImageUrl(uploadedUrl);
-      pushToast('success', 'Notice image uploaded');
+      await updateNoteDocument(note, { published: !note.published });
+      pushToast(
+        'info',
+        note.published ? 'Note Unpublished' : 'Note Published',
+        `"${note.title}" is now ${note.published ? 'hidden as draft' : 'live for students'}.`
+      );
+    } catch (err: any) {
+      pushToast('error', 'Update Failed', err?.message || 'Could not update note visibility.');
+    }
+  };
+
+  // ============================================================================
+  // Paper Handlers
+  // ============================================================================
+  const handleOpenPaperModal = (paper?: ExamPaper) => {
+    setPaperUploadProgress(null);
+    if (paper) {
+      const isDrive = isGoogleDriveResource(paper);
+      setEditingPaper(paper);
+      setPaperTitle(paper.title);
+      setPaperSubject(paper.subject);
+      setPaperYear(paper.year);
+      setPaperCategory(paper.category);
+      setPaperGrade(paper.grade);
+      setPaperLanguage(paper.language || 'English');
+      setPaperDesc(paper.description);
+      setPaperSourceType(isDrive ? 'drive' : 'pdf');
+      setPaperDriveUrl(paper.driveUrl || (isDrive ? paper.pdfUrl : ''));
+      setPaperPdfUrl(isDrive ? '' : paper.pdfUrl || '');
+      setPaperStoragePath(paper.storagePath || '');
+      setPaperFileName(paper.fileName || '');
+      setPaperFileSize(paper.fileSize || 0);
+      setPaperPublished(paper.published);
+    } else {
+      setEditingPaper(null);
+      setPaperTitle('');
+      setPaperSubject('Engineering Technology');
+      setPaperYear(new Date().getFullYear());
+      setPaperCategory('National Past Paper');
+      setPaperGrade('Grade 13 (G.C.E. A/L)');
+      setPaperLanguage('English');
+      setPaperDesc('');
+      setPaperSourceType('pdf');
+      setPaperDriveUrl('');
+      setPaperPdfUrl('/api/curriculum-pdf/past-paper.pdf?title=Past+Paper');
+      setPaperStoragePath('');
+      setPaperFileName('past-paper.pdf');
+      setPaperFileSize(0);
+      setPaperPublished(true);
+    }
+    setShowPaperModal(true);
+  };
+
+  const handlePaperFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setPaperUploadProgress(5);
+    try {
+      const uploaded = await uploadValidatedPdfFile(file, 'papers', (pct) =>
+        setPaperUploadProgress(pct)
+      );
+      setPaperSourceType('pdf');
+      setPaperPdfUrl(uploaded.pdfUrl);
+      setPaperStoragePath(uploaded.storagePath);
+      setPaperFileName(uploaded.fileName);
+      setPaperFileSize(uploaded.fileSize);
+      if (!paperTitle.trim()) {
+        setPaperTitle(file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' '));
+      }
+      pushToast(
+        'success',
+        'Paper PDF Uploaded',
+        `${file.name} (${formatBytes(uploaded.fileSize)}) ready.`
+      );
     } catch (err) {
-      pushToast('error', 'Image upload failed', err instanceof Error ? err.message : '');
+      pushToast(
+        'error',
+        'PDF Upload Failed',
+        err instanceof Error ? err.message : 'Unable to upload PDF.'
+      );
     } finally {
-      setAnnImageUploadPct(null);
+      setPaperUploadProgress(null);
+    }
+  };
+
+  const handleSavePaper = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (paperSourceType === 'drive') {
+      const check = validateGoogleDriveUrl(paperDriveUrl);
+      if (!check.valid) {
+        pushToast('error', 'Invalid Google Drive Link', check.error || 'Check the link format.');
+        return;
+      }
+    } else if (!paperPdfUrl.trim()) {
+      pushToast('error', 'Missing PDF', 'Upload a PDF file or enter a valid PDF URL.');
+      return;
+    }
+
+    setSavingModal(true);
+    try {
+      if (editingPaper) {
+        await updatePaperDocument(editingPaper, {
+          title: paperTitle,
+          subject: paperSubject,
+          year: paperYear,
+          category: paperCategory,
+          grade: paperGrade,
+          language: paperLanguage,
+          description: paperDesc,
+          sourceType: paperSourceType,
+          driveUrl: paperSourceType === 'drive' ? paperDriveUrl : '',
+          pdfUrl: paperSourceType === 'drive' ? paperDriveUrl : paperPdfUrl,
+          storagePath: paperSourceType === 'drive' ? '' : paperStoragePath,
+          fileName: paperSourceType === 'drive' ? 'Google Drive Document' : paperFileName,
+          fileSize: paperSourceType === 'drive' ? 0 : paperFileSize,
+          published: paperPublished,
+        });
+        pushToast('success', 'Paper Updated', `Successfully updated past paper "${paperTitle}"`);
+      } else {
+        await createPaperDocument({
+          title: paperTitle,
+          subject: paperSubject,
+          year: paperYear,
+          category: paperCategory,
+          grade: paperGrade,
+          language: paperLanguage,
+          description: paperDesc,
+          sourceType: paperSourceType,
+          driveUrl: paperSourceType === 'drive' ? paperDriveUrl : '',
+          pdfUrl: paperSourceType === 'drive' ? paperDriveUrl : paperPdfUrl,
+          storagePath: paperSourceType === 'drive' ? '' : paperStoragePath,
+          fileName: paperSourceType === 'drive' ? 'Google Drive Document' : paperFileName,
+          fileSize: paperSourceType === 'drive' ? 0 : paperFileSize,
+          published: paperPublished,
+        });
+        pushToast('success', 'Paper Created', `Successfully added past paper "${paperTitle}"`);
+      }
+      setShowPaperModal(false);
+    } catch (err: any) {
+      pushToast('error', 'Operation Failed', err?.message || 'Failed to save past paper.');
+    } finally {
+      setSavingModal(false);
+    }
+  };
+
+  const handleTogglePaperPublish = async (paper: ExamPaper) => {
+    try {
+      await updatePaperDocument(paper, { published: !paper.published });
+      pushToast(
+        'info',
+        paper.published ? 'Paper Unpublished' : 'Paper Published',
+        `"${paper.title}" is now ${paper.published ? 'hidden as draft' : 'live for students'}.`
+      );
+    } catch (err: any) {
+      pushToast('error', 'Update Failed', err?.message || 'Could not update paper visibility.');
+    }
+  };
+
+  // ============================================================================
+  // Announcement Handlers
+  // ============================================================================
+  const handleOpenAnnModal = (ann?: Announcement) => {
+    if (ann) {
+      setEditingAnn(ann);
+      setAnnTitle(ann.title);
+      setAnnBody(ann.body);
+      setAnnCategory(ann.category);
+      setAnnPriority(ann.priority);
+      setAnnIsImportant(ann.isImportant);
+      setAnnImageUrl(ann.imageUrl || '');
+      setAnnPublished(ann.published);
+    } else {
+      setEditingAnn(null);
+      setAnnTitle('');
+      setAnnBody('');
+      setAnnCategory('Important Announcement');
+      setAnnPriority('high');
+      setAnnIsImportant(true);
+      setAnnImageUrl('');
+      setAnnPublished(true);
+    }
+    setAnnImageUploadProgress(null);
+    setShowAnnModal(true);
+  };
+
+  const handleAnnImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setAnnImageUploading(true);
+    setAnnImageUploadProgress(5);
+    try {
+      const url = await uploadNoticeImageFile(file, (pct) => setAnnImageUploadProgress(pct));
+      setAnnImageUrl(url);
+      pushToast('success', 'Banner Image Uploaded', 'Notice banner attached successfully.');
+    } catch (err) {
+      pushToast(
+        'error',
+        'Image Upload Failed',
+        err instanceof Error ? err.message : 'Could not upload notice image.'
+      );
+    } finally {
+      setAnnImageUploading(false);
+      setAnnImageUploadProgress(null);
     }
   };
 
   const handleSaveAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (annTitle.trim().length < 2 || annBody.trim().length < 4) {
-      pushToast('error', 'Validation error', 'Enter both an announcement title and message body.');
-      return;
-    }
-    setAnnBusy(true);
+    setSavingModal(true);
     try {
       if (editingAnn) {
         await updateAnnouncementDocument(editingAnn, {
@@ -277,7 +554,7 @@ export function AdminPage() {
           imageUrl: annImageUrl,
           published: annPublished,
         });
-        pushToast('success', 'Announcement updated');
+        pushToast('success', 'Notice Updated', `Updated "${annTitle}"`);
       } else {
         await createAnnouncementDocument({
           title: annTitle,
@@ -288,1866 +565,1360 @@ export function AdminPage() {
           imageUrl: annImageUrl,
           published: annPublished,
         });
-        pushToast(
-          'success',
-          annPublished ? 'Announcement published live' : 'Announcement saved as draft'
-        );
+        pushToast('success', 'Notice Published', `Published "${annTitle}"`);
       }
-      resetAnnForm();
-    } catch (err) {
-      pushToast('error', 'Announcement error', err instanceof Error ? err.message : '');
+      setShowAnnModal(false);
+    } catch (err: any) {
+      pushToast('error', 'Save Failed', err?.message || 'Unable to save announcement.');
     } finally {
-      setAnnBusy(false);
+      setSavingModal(false);
     }
   };
 
-  // --- Educational Notes ---
-  const resetNoteForm = () => {
-    setEditingNote(null);
-    setNoteTitle('');
-    setNoteSubject('Engineering Technology');
-    setNoteGrade('Grade 13 (G.C.E. A/L)');
-    setNoteTagsInput('');
-    setNoteDesc('');
-    setNoteThumb(VISUAL_ASSETS.thumbEngineeringTech);
-    setNotePublished(true);
-    setNoteSourceType('drive');
-    setNoteDriveUrl('');
-    setNoteFile(null);
-    setNoteUploadPct(null);
-    setNoteError(null);
-  };
-
-  const handleSaveNote = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setNoteError(null);
-    const valErr = validateNoteFormInput({
-      title: noteTitle,
-      subject: noteSubject,
-      grade: noteGrade,
-      description: noteDesc,
-    });
-    if (valErr) {
-      setNoteError(valErr);
-      return;
-    }
-
-    if (noteSourceType === 'drive') {
-      const driveCheck = validateGoogleDriveUrl(noteDriveUrl);
-      if (!driveCheck.valid) {
-        setNoteError(driveCheck.error || 'Please enter a valid Google Drive sharing link.');
-        return;
-      }
-    } else if ((!editingNote || isGoogleDriveResource(editingNote)) && !noteFile) {
-      setNoteError('Please choose a PDF file (.pdf, max 25 MB) or switch to Google Drive Link.');
-      return;
-    }
-
-    const parsedTags = parseTagsInput(noteTagsInput);
-    setNoteBusy(true);
+  const handleToggleAnnPublish = async (ann: Announcement) => {
     try {
-      if (editingNote) {
-        if (noteSourceType === 'drive') {
-          const driveCheck = validateGoogleDriveUrl(noteDriveUrl);
-          await updateNoteDocument(editingNote, {
-            title: noteTitle,
-            subject: noteSubject,
-            grade: noteGrade,
-            description: noteDesc,
-            tags: parsedTags,
-            thumbnailUrl: noteThumb,
-            published: notePublished,
-            sourceType: 'drive',
-            driveUrl: driveCheck.normalizedUrl,
-            pdfUrl: driveCheck.normalizedUrl,
-          });
-          pushToast('success', 'Educational note updated with Google Drive link');
-        } else {
-          let filePatch: Partial<NoteResource> = { sourceType: 'pdf', driveUrl: '' };
-          if (noteFile) {
-            setNoteUploadPct(5);
-            const up = await uploadValidatedPdfFile(noteFile, 'notes', (pct) =>
-              setNoteUploadPct(pct)
-            );
-            filePatch = {
-              sourceType: 'pdf',
-              driveUrl: '',
-              pdfUrl: up.pdfUrl,
-              storagePath: up.storagePath,
-              fileName: up.fileName,
-              fileSize: up.fileSize,
-            };
-          }
-          await updateNoteDocument(editingNote, {
-            title: noteTitle,
-            subject: noteSubject,
-            grade: noteGrade,
-            description: noteDesc,
-            tags: parsedTags,
-            thumbnailUrl: noteThumb,
-            published: notePublished,
-            ...filePatch,
-          });
-          pushToast('success', 'Educational note updated');
-        }
-      } else if (noteSourceType === 'drive') {
-        const driveCheck = validateGoogleDriveUrl(noteDriveUrl);
-        await createNoteDocument({
-          title: noteTitle,
-          subject: noteSubject,
-          grade: noteGrade,
-          description: noteDesc,
-          tags: parsedTags,
-          sourceType: 'drive',
-          driveUrl: driveCheck.normalizedUrl,
-          pdfUrl: driveCheck.normalizedUrl,
-          storagePath: '',
-          fileName: 'Google Drive Document',
-          fileSize: 0,
-          thumbnailUrl: noteThumb,
-          published: notePublished,
-        });
-        pushToast('success', 'Google Drive note added to library');
-      } else {
-        setNoteUploadPct(5);
-        const up = await uploadValidatedPdfFile(noteFile!, 'notes', (pct) =>
-          setNoteUploadPct(pct)
-        );
-        await createNoteDocument({
-          title: noteTitle,
-          subject: noteSubject,
-          grade: noteGrade,
-          description: noteDesc,
-          tags: parsedTags,
-          sourceType: 'pdf',
-          driveUrl: '',
-          pdfUrl: up.pdfUrl,
-          storagePath: up.storagePath,
-          fileName: up.fileName,
-          fileSize: up.fileSize,
-          thumbnailUrl: noteThumb,
-          published: notePublished,
-        });
-        pushToast('success', 'Educational note uploaded');
-      }
-      resetNoteForm();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to save note.';
-      setNoteError(msg);
-      pushToast('error', 'Note save failed', msg);
-    } finally {
-      setNoteBusy(false);
-      setNoteUploadPct(null);
-    }
-  };
-
-  // --- PDF & Google Drive Paper Management ---
-  const resetPaperForm = () => {
-    setEditingPaper(null);
-    setPaperTitle('');
-    setPaperSubject('Engineering Technology');
-    setPaperCategory('National Past Paper');
-    setPaperYear(new Date().getFullYear());
-    setPaperGrade('Grade 13 (G.C.E. A/L)');
-    setPaperType('National A/L');
-    setPaperLang('English');
-    setPaperDesc('');
-    setPaperPublished(true);
-    setPaperSourceType('drive');
-    setPaperDriveUrl('');
-    setPaperFile(null);
-    setPaperUploadPct(null);
-    setPaperError(null);
-  };
-
-  const handleSavePaper = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPaperError(null);
-    const valErr = validatePaperFormInput({
-      title: paperTitle,
-      subject: paperSubject,
-      category: paperCategory,
-      year: Number(paperYear),
-      grade: paperGrade,
-      examType: paperType,
-      language: paperLang,
-      description: paperDesc,
-    });
-    if (valErr) {
-      setPaperError(valErr);
-      return;
-    }
-
-    if (paperSourceType === 'drive') {
-      const driveCheck = validateGoogleDriveUrl(paperDriveUrl);
-      if (!driveCheck.valid) {
-        setPaperError(driveCheck.error || 'Please enter a valid Google Drive sharing link.');
-        return;
-      }
-    } else if ((!editingPaper || isGoogleDriveResource(editingPaper)) && !paperFile) {
-      setPaperError(
-        'Please select a PDF examination paper file (.pdf, max 25 MB) or switch to Google Drive Link.'
+      await updateAnnouncementDocument(ann, { published: !ann.published });
+      pushToast(
+        'info',
+        ann.published ? 'Notice Hidden' : 'Notice Published',
+        `"${ann.title}" visibility updated.`
       );
-      return;
-    }
-
-    setPaperBusy(true);
-    try {
-      if (editingPaper) {
-        if (paperSourceType === 'drive') {
-          const driveCheck = validateGoogleDriveUrl(paperDriveUrl);
-          await updatePaperDocument(editingPaper, {
-            title: paperTitle,
-            subject: paperSubject,
-            category: paperCategory,
-            year: Number(paperYear),
-            grade: paperGrade,
-            examType: paperType,
-            language: paperLang,
-            description: paperDesc,
-            published: paperPublished,
-            sourceType: 'drive',
-            driveUrl: driveCheck.normalizedUrl,
-            pdfUrl: driveCheck.normalizedUrl,
-          });
-          pushToast('success', 'Past paper updated with Google Drive link');
-        } else {
-          let filePatch: Partial<ExamPaper> = { sourceType: 'pdf', driveUrl: '' };
-          if (paperFile) {
-            setPaperUploadPct(5);
-            const up = await uploadValidatedPdfFile(paperFile, 'papers', (pct) =>
-              setPaperUploadPct(pct)
-            );
-            filePatch = {
-              sourceType: 'pdf',
-              driveUrl: '',
-              pdfUrl: up.pdfUrl,
-              storagePath: up.storagePath,
-              fileName: up.fileName,
-              fileSize: up.fileSize,
-            };
-          }
-          await updatePaperDocument(editingPaper, {
-            title: paperTitle,
-            subject: paperSubject,
-            category: paperCategory,
-            year: Number(paperYear),
-            grade: paperGrade,
-            examType: paperType,
-            language: paperLang,
-            description: paperDesc,
-            published: paperPublished,
-            ...filePatch,
-          });
-          pushToast('success', 'Past examination paper updated');
-        }
-      } else if (paperSourceType === 'drive') {
-        const driveCheck = validateGoogleDriveUrl(paperDriveUrl);
-        await createPaperDocument({
-          title: paperTitle,
-          subject: paperSubject,
-          category: paperCategory,
-          year: Number(paperYear),
-          grade: paperGrade,
-          examType: paperType,
-          language: paperLang,
-          description: paperDesc,
-          sourceType: 'drive',
-          driveUrl: driveCheck.normalizedUrl,
-          pdfUrl: driveCheck.normalizedUrl,
-          storagePath: '',
-          fileName: 'Google Drive Document',
-          fileSize: 0,
-          published: paperPublished,
-        });
-        pushToast('success', 'Google Drive past paper added to archive');
-      } else {
-        setPaperUploadPct(5);
-        const up = await uploadValidatedPdfFile(paperFile!, 'papers', (pct) =>
-          setPaperUploadPct(pct)
-        );
-        await createPaperDocument({
-          title: paperTitle,
-          subject: paperSubject,
-          category: paperCategory,
-          year: Number(paperYear),
-          grade: paperGrade,
-          examType: paperType,
-          language: paperLang,
-          description: paperDesc,
-          sourceType: 'pdf',
-          driveUrl: '',
-          pdfUrl: up.pdfUrl,
-          storagePath: up.storagePath,
-          fileName: up.fileName,
-          fileSize: up.fileSize,
-          published: paperPublished,
-        });
-        pushToast('success', 'PDF examination paper uploaded');
-      }
-      resetPaperForm();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Paper save failed.';
-      setPaperError(msg);
-      pushToast('error', 'Paper save failed', msg);
-    } finally {
-      setPaperBusy(false);
-      setPaperUploadPct(null);
+    } catch (err: any) {
+      pushToast('error', 'Update Failed', err?.message || 'Could not update notice.');
     }
   };
 
-  const activeSectionMeta =
-    SIDEBAR_SECTIONS.find((s) => s.id === activeSection) || SIDEBAR_SECTIONS[0];
+  // ============================================================================
+  // Shared Confirm Delete Execution
+  // ============================================================================
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      if (deleteTarget.kind === 'note') {
+        await deleteNoteDocument(deleteTarget.item);
+        pushToast('success', 'Note Deleted', `Deleted note "${deleteTarget.item.title}"`);
+      } else if (deleteTarget.kind === 'paper') {
+        await deletePaperDocument(deleteTarget.item);
+        pushToast('success', 'Paper Deleted', `Deleted past paper "${deleteTarget.item.title}"`);
+      } else if (deleteTarget.kind === 'announcement') {
+        await deleteAnnouncementDocument(deleteTarget.item);
+        pushToast('success', 'Notice Deleted', `Deleted notice "${deleteTarget.item.title}"`);
+      }
+      setDeleteTarget(null);
+    } catch (err: any) {
+      pushToast('error', 'Delete Failed', err?.message || 'Operation could not be completed.');
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const handleSeedStarterContent = async () => {
+    setSeedingBusy(true);
+    try {
+      const { sampleExamCode } = await seedStarterCurriculumByAdmin();
+      pushToast(
+        'success',
+        'Starter Curriculum Seeded',
+        `Sample notes, papers, announcement, and online exam created (6-digit exam password: ${sampleExamCode}).`
+      );
+    } catch (err: any) {
+      pushToast('error', 'Seeding Failed', err?.message || 'Unable to seed starter content.');
+    } finally {
+      setSeedingBusy(false);
+    }
+  };
+
+  const handleSyncAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSyncBusy(true);
+    try {
+      await linkAdminPasswordToGoogleAccount(syncPassword);
+      setSyncPassword('');
+      pushToast(
+        'success',
+        'Cross-Device Password Synced',
+        'Logging in with your Admin Password on any browser or phone now automatically grants full cloud write authority.'
+      );
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (code === 'auth/operation-not-allowed') {
+        pushToast(
+          'error',
+          'Enable Email/Password in Firebase Console',
+          'Open Firebase Console → Authentication → Sign-in method → Enable "Email/Password", then click Sync Password again.'
+        );
+      } else if (code === 'auth/requires-recent-login') {
+        pushToast(
+          'info',
+          'Fresh Google Sign-In Required',
+          'Click Sign Out and Sign In with Google once, then sync your password.'
+        );
+      } else {
+        pushToast('error', 'Password Sync Failed', err?.message || 'Could not link password.');
+      }
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const showSearchToolbar =
+    activeTab === 'notes' || activeTab === 'papers' || activeTab === 'announcements';
 
   return (
-    <div className="mx-auto max-w-[1440px] px-4 py-8 sm:px-6 lg:px-8">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Sidebar Navigation (11 Requested Sections including Logout) */}
-        <aside className="lg:col-span-3 xl:col-span-3">
-          <div className="glass-panel sticky top-20 rounded-2xl p-4">
-            <div className="border-b border-slate-800/90 px-2 pb-3.5">
-              <p className="text-[11px] font-medium text-cyan-300">Smart Tech Admin Console</p>
-              <p className="mt-0.5 truncate text-xs text-slate-300">{firebaseUser.email}</p>
-            </div>
-
-            <nav aria-label="Administrator dashboard navigation" className="mt-3 space-y-1">
-              {SIDEBAR_SECTIONS.map(({ id, label, Icon }) => {
-                const isActive = activeSection === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setActiveSection(id)}
-                    className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-medium transition-colors ${
-                      isActive
-                        ? 'bg-sky-500 text-slate-950 font-semibold'
-                        : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
-                    }`}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{label}</span>
-                  </button>
-                );
-              })}
-
-              {/* 11. Dedicated Logout Control */}
-              <div className="border-t border-slate-800/90 pt-2">
-                <button
-                  type="button"
-                  onClick={logoutAdminSession}
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-950/40 hover:text-rose-200"
-                >
-                  <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span>Logout</span>
-                </button>
-              </div>
-            </nav>
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
+      {/* Header */}
+      <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800 pb-6">
+        <div>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
+              Administrator Control Panel
+            </h1>
+            <span className="rounded-full bg-amber-500/15 border border-amber-500/30 px-3 py-1 text-xs font-semibold text-amber-300">
+              Authorized Admin
+            </span>
           </div>
-        </aside>
+          <p className="text-slate-300 text-sm pt-1">
+            Full content management system, online examination builder, announcements, and rank board manager.
+          </p>
+        </div>
 
-        {/* Main Workspace Canvas */}
-        <div className="space-y-6 lg:col-span-9 xl:col-span-9">
-          {/* Contextual Top Header */}
-          <div className="glass-surface flex flex-wrap items-center justify-between gap-4 rounded-2xl px-6 py-4">
-            <div>
-              <p className="text-xs text-slate-400">
-                Admin Dashboard / <span className="text-cyan-300">{activeSectionMeta.label}</span>
-              </p>
-              <h1 className="mt-0.5 font-display text-2xl font-bold text-slate-50">
-                {activeSectionMeta.label}
-              </h1>
-            </div>
-
-            <div className="flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={() => navigate('setup-guide')}
-                className="rounded-lg border border-slate-700 bg-slate-900/80 px-3.5 py-2 text-xs font-medium text-slate-200 hover:border-sky-400/50 hover:text-white whitespace-nowrap"
-              >
-                Security &amp; Setup Guide
-              </button>
-            </div>
-          </div>
-
-          {/* =============================================================== */}
-          {/* SECTION 1: OVERVIEW */}
-          {/* =============================================================== */}
-          {activeSection === 'overview' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
-                <div className="glass-surface rounded-2xl p-4">
-                  <p className="text-xs text-slate-400">Users</p>
-                  <p className="mt-1 font-mono text-2xl font-semibold text-slate-50 tabular-nums">
-                    {Math.max(stats.totalUsers, allUsers.length)}
-                  </p>
-                </div>
-                <div className="glass-surface rounded-2xl p-4">
-                  <p className="text-xs text-slate-400">Notes</p>
-                  <p className="mt-1 font-mono text-2xl font-semibold text-slate-50 tabular-nums">
-                    {allNotes.length}
-                  </p>
-                </div>
-                <div className="glass-surface rounded-2xl p-4">
-                  <p className="text-xs text-slate-400">PDF Papers</p>
-                  <p className="mt-1 font-mono text-2xl font-semibold text-slate-50 tabular-nums">
-                    {allPapers.length}
-                  </p>
-                </div>
-                <div className="glass-surface rounded-2xl p-4">
-                  <p className="text-xs text-slate-400">Online Exams</p>
-                  <p className="mt-1 font-mono text-2xl font-semibold text-cyan-300 tabular-nums">
-                    {allExams.length}
-                  </p>
-                </div>
-                <div className="glass-surface rounded-2xl p-4">
-                  <p className="text-xs text-slate-400">Submissions</p>
-                  <p className="mt-1 font-mono text-2xl font-semibold text-emerald-300 tabular-nums">
-                    {Math.max(stats.completedAttempts || 0, allExamAttempts.length)}
-                  </p>
-                </div>
-                <div className="glass-surface rounded-2xl p-4">
-                  <p className="text-xs text-slate-400">Rank Entries</p>
-                  <p className="mt-1 font-mono text-2xl font-semibold text-amber-300 tabular-nums">
-                    {Math.max(
-                      stats.publishedResults || 0,
-                      allRankEntries.length + allCustomRankEntries.length
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              {/* Starter Curriculum & Sample 6-Digit Exam Initializer */}
-              <div className="glass-panel flex flex-col justify-between gap-4 rounded-2xl p-6 sm:flex-row sm:items-center">
-                <div>
-                  <h2 className="text-base font-semibold text-slate-50">
-                    Quick Curriculum &amp; 6-Digit Online Exam Initializer
-                  </h2>
-                  <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-300">
-                    Populate real Cloud Firestore Technology Stream PDF notes, past papers, an
-                    Important Home Popup announcement, and a ready-to-sit 5-question Native Online
-                    Examination with an encrypted 6-digit password.
-                  </p>
-                  {seededSampleCode && (
-                    <p className="mt-2 font-mono text-xs font-semibold text-cyan-300 tabular-nums">
-                      Generated Sample Exam 6-Digit Password: {seededSampleCode}
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  disabled={seeding}
-                  onClick={handleSeedStarterData}
-                  className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50 whitespace-nowrap shrink-0"
-                >
-                  <Database className="h-3.5 w-3.5" aria-hidden="true" />
-                  {seeding ? 'Writing Records...' : 'Seed Starter Curriculum'}
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                <div className="glass-surface rounded-2xl p-6">
-                  <h2 className="text-base font-semibold text-slate-50">Recent Resource Uploads</h2>
-                  {allNotes.length === 0 && allPapers.length === 0 ? (
-                    <p className="mt-4 text-sm text-slate-400">No PDF resources uploaded yet.</p>
-                  ) : (
-                    <ul className="mt-4 divide-y divide-slate-800/80 text-xs">
-                      {[...allNotes.slice(0, 3), ...allPapers.slice(0, 3)]
-                        .sort((a, b) => b.createdAtMs - a.createdAtMs)
-                        .slice(0, 6)
-                        .map((item) => (
-                          <li key={item.id} className="flex items-center justify-between gap-3 py-3">
-                            <div className="min-w-0">
-                              <p className="truncate font-semibold text-slate-100">{item.title}</p>
-                              <p className="text-slate-400">
-                                {item.subject} · {item.published ? 'Published' : 'Draft'}
-                              </p>
-                            </div>
-                            <span className="shrink-0 font-mono text-slate-500 tabular-nums">
-                              {formatShortDate(item.createdAtMs)}
-                            </span>
-                          </li>
-                        ))}
-                    </ul>
-                  )}
-                </div>
-
-                <div className="glass-surface rounded-2xl p-6">
-                  <h2 className="text-base font-semibold text-slate-50">
-                    Recent Administrative Audit Activity
-                  </h2>
-                  {auditLogs.length === 0 ? (
-                    <p className="mt-4 text-sm text-slate-400">
-                      Privileged operations are logged automatically as actions occur.
-                    </p>
-                  ) : (
-                    <ul className="mt-4 divide-y divide-slate-800/80 text-xs">
-                      {auditLogs.slice(0, 6).map((log) => (
-                        <li key={log.id} className="py-3">
-                          <div className="flex items-center justify-between gap-2 text-slate-400">
-                            <span className="font-mono text-cyan-300">{log.action}</span>
-                            <span className="font-mono tabular-nums">
-                              {formatShortDate(log.createdAtMs)}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-slate-200">{log.summary}</p>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* =============================================================== */}
-          {/* SECTION 2: USER MANAGEMENT */}
-          {/* =============================================================== */}
-          {activeSection === 'users' && (
-            <div className="space-y-6">
-              <div className="glass-surface rounded-2xl p-5">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div className="w-full max-w-md">
-                    <label htmlFor="adm-user-search" className="block text-xs font-medium text-slate-300">
-                      Search Registered Accounts ({allUsers.length})
-                    </label>
-                    <input
-                      id="adm-user-search"
-                      type="search"
-                      value={userSearch}
-                      onChange={(e) => setUserSearch(e.target.value)}
-                      placeholder="Filter by student name, email, or stream..."
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Role assignments write directly to <code className="font-mono text-slate-200">/admins/&#123;uid&#125;</code>.
-                  </p>
-                </div>
-              </div>
-
-              {filteredUsers.length === 0 ? (
-                <div className="glass-surface rounded-2xl p-8 text-center text-sm text-slate-400">
-                  No registered user profiles match your search criteria.
-                </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {allNotes.length === 0 && allPapers.length === 0 && firebaseUser && (
+            <button
+              type="button"
+              disabled={seedingBusy}
+              onClick={handleSeedStarterContent}
+              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/35 bg-cyan-500/15 px-3.5 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
+            >
+              {seedingBusy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <div className="glass-surface overflow-hidden rounded-2xl">
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-slate-800 bg-[#070f20] text-xs text-slate-400">
-                          <th className="px-4 py-3 font-medium">User</th>
-                          <th className="px-4 py-3 font-medium">Academic Stream</th>
-                          <th className="px-4 py-3 font-medium">Role</th>
-                          <th className="px-4 py-3 font-medium">Last Active</th>
-                          <th className="px-4 py-3 text-right font-medium">Privilege Control</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/80">
-                        {filteredUsers.map((u) => {
-                          const isOwner = u.email.toLowerCase() === 'hiranyaudakara2@gmail.com';
-                          const holdsAdmin = isOwner || adminUidSet.has(u.uid) || u.role === 'admin';
-                          return (
-                            <tr key={u.uid} className="hover:bg-sky-500/[0.03]">
-                              <td className="px-4 py-3">
-                                <p className="font-medium text-slate-100">{u.displayName}</p>
-                                <p className="text-xs text-slate-400">{u.email}</p>
-                              </td>
-                              <td className="px-4 py-3 text-xs text-slate-300">
-                                {u.grade || 'Technology Stream'}
-                              </td>
-                              <td className="px-4 py-3 text-xs">
-                                <span className={holdsAdmin ? 'font-semibold text-cyan-300' : 'text-slate-300'}>
-                                  {isOwner
-                                    ? 'Primary Owner Admin'
-                                    : holdsAdmin
-                                    ? 'Administrator'
-                                    : 'Student'}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 font-mono text-xs text-slate-400 tabular-nums whitespace-nowrap">
-                                {formatShortDate(u.lastLoginAtMs)}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                {isOwner ? (
-                                  <span className="text-xs text-slate-500">Protected Owner</span>
-                                ) : holdsAdmin ? (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setConfirmState({
-                                        title: 'Revoke Administrator Privileges',
-                                        description: `Revoke administrator privileges from ${u.email}?`,
-                                        confirmLabel: 'Revoke Role',
-                                        action: async () => {
-                                          await revokeAdminPrivilege(u.uid, u.email);
-                                          pushToast('info', 'Admin privilege revoked');
-                                        },
-                                      })
-                                    }
-                                    className="rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-950/40"
-                                  >
-                                    Revoke Admin
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setConfirmState({
-                                        title: 'Grant Administrator Privileges',
-                                        description: `Grant full administrator privileges to ${u.email}?`,
-                                        confirmLabel: 'Grant Admin Role',
-                                        action: async () => {
-                                          await grantAdminPrivilege(u.uid, u.email);
-                                          pushToast('success', 'Administrator role granted');
-                                        },
-                                      })
-                                    }
-                                    className="rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-sky-500/20"
-                                  >
-                                    Grant Admin
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                <Sparkles className="h-3.5 w-3.5" />
               )}
-            </div>
+              <span>Seed Starter Curriculum</span>
+            </button>
           )}
+          <button
+            type="button"
+            onClick={() => navigate('setup-guide')}
+            className="rounded-xl border border-slate-700 bg-slate-900/80 px-3.5 py-2 text-xs font-semibold text-slate-200 hover:border-slate-500 hover:text-white"
+          >
+            Netlify &amp; Hosting Guide
+          </button>
+        </div>
+      </header>
 
-          {/* =============================================================== */}
-          {/* SECTION 3: MESSAGES AND ANNOUNCEMENTS (WITH HOME POPUP PREVIEW) */}
-          {/* =============================================================== */}
-          {activeSection === 'announcements' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
-                <form
-                  onSubmit={handleSaveAnnouncement}
-                  className="glass-surface rounded-2xl p-6 xl:col-span-7"
+      {/* Password-Only Session Cloud Write Helper Banner */}
+      {!firebaseUser && (
+        <div className="rounded-2xl border border-amber-500/35 bg-amber-950/30 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
+            <div className="text-xs leading-relaxed text-amber-100/90">
+              <p className="font-bold text-amber-200">
+                Admin Password Session Active — Connect Cloud Write Identity
+              </p>
+              <p className="mt-0.5 text-slate-300">
+                To create, upload, edit, or delete Firestore &amp; Cloud Storage records from this browser, tap{' '}
+                <strong className="text-white">Authorize with Google</strong> once (or sync your Admin Password under{' '}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('security')}
+                  className="font-semibold text-cyan-300 underline hover:text-cyan-200"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="text-lg font-semibold text-slate-50">
-                      {editingAnn ? 'Edit Official Message' : 'Publish Official Message / Home Popup'}
-                    </h2>
-                    {editingAnn && (
-                      <button
-                        type="button"
-                        onClick={resetAnnForm}
-                        className="text-xs text-slate-400 hover:text-white"
+                  Audit Logs &amp; Security
+                </button>{' '}
+                for 1-step password-only writes on every device).
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => signInWithGoogle('admin')}
+            className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-amber-400 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-300 transition-colors"
+          >
+            <ShieldCheck className="h-4 w-4" />
+            <span>Authorize with Google</span>
+          </button>
+        </div>
+      )}
+
+      {/* Admin Tab Buttons */}
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-800 pb-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('notes')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+            activeTab === 'notes'
+              ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <BookOpen className="h-4 w-4" />
+          <span>Notes ({allNotes.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('papers')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+            activeTab === 'papers'
+              ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <FileText className="h-4 w-4" />
+          <span>Past Papers ({allPapers.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('exams')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+            activeTab === 'exams'
+              ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <Monitor className="h-4 w-4" />
+          <span>Online Exams &amp; Grading</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('announcements')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+            activeTab === 'announcements'
+              ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <Bell className="h-4 w-4" />
+          <span>Notices ({allAnnouncements.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('rankboards')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+            activeTab === 'rankboards'
+              ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <Trophy className="h-4 w-4" />
+          <span>Rank Boards</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('security')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+            activeTab === 'security'
+              ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <ShieldCheck className="h-4 w-4" />
+          <span>Audit Logs &amp; Security</span>
+        </button>
+      </div>
+
+      {/* Quick Search Bar for Notes / Papers / Announcements */}
+      {showSearchToolbar && (
+        <div className="relative max-w-md">
+          <Search className="absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder={`Filter ${activeTab} by title, subject, or keyword...`}
+            className="w-full rounded-xl border border-slate-700 bg-slate-900/80 pl-10 pr-4 py-2.5 text-sm text-slate-100 placeholder-slate-400 focus:border-cyan-400 focus:outline-none"
+          />
+        </div>
+      )}
+
+      {/* Tab 1: Educational Notes Management */}
+      {activeTab === 'notes' && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-xl font-bold text-white">Educational Notes Management</h2>
+            <button
+              type="button"
+              onClick={() => handleOpenNoteModal()}
+              className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-white hover:bg-cyan-400 shadow-md shadow-cyan-500/20"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Add Educational Note</span>
+            </button>
+          </div>
+
+          {filteredNotes.length === 0 ? (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center text-sm text-slate-400">
+              No educational notes found. Click <strong className="text-slate-200">Add Educational Note</strong> to upload a PDF or link Google Drive.
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredNotes.map((note) => (
+                <div
+                  key={note.id}
+                  className="glass-panel flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4"
+                >
+                  <div>
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                      <span className="font-semibold text-cyan-300">{note.subject}</span>
+                      <span
+                        className={`px-2 py-0.5 rounded-full font-semibold ${
+                          note.published
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : 'bg-rose-500/15 text-rose-300'
+                        }`}
                       >
-                        Cancel Edit
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="mt-4 space-y-4">
-                    <div>
-                      <label htmlFor="ann-title" className="block text-xs font-medium text-slate-300">
-                        Message Title
-                      </label>
-                      <input
-                        id="ann-title"
-                        type="text"
-                        required
-                        maxLength={160}
-                        value={annTitle}
-                        onChange={(e) => setAnnTitle(e.target.value)}
-                        placeholder="e.g., Special Mock Examination Opens Friday at 8:00 AM"
-                        className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div>
-                        <label htmlFor="ann-cat" className="block text-xs font-medium text-slate-300">
-                          Category
-                        </label>
-                        <select
-                          id="ann-cat"
-                          value={annCategory}
-                          onChange={(e) =>
-                            setAnnCategory(e.target.value as AnnouncementCategory)
-                          }
-                          className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3 py-2 text-sm text-slate-100"
-                        >
-                          <option value="Important Announcement">Important Announcement</option>
-                          <option value="Exam Notice">Exam Notice</option>
-                          <option value="New Upload">New Upload</option>
-                          <option value="General Notice">General Notice</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label htmlFor="ann-prio" className="block text-xs font-medium text-slate-300">
-                          Priority Level
-                        </label>
-                        <select
-                          id="ann-prio"
-                          value={annPriority}
-                          onChange={(e) =>
-                            setAnnPriority(e.target.value as AnnouncementPriority)
-                          }
-                          className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3 py-2 text-sm text-slate-100"
-                        >
-                          <option value="urgent">Urgent</option>
-                          <option value="high">High</option>
-                          <option value="normal">Normal</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label htmlFor="ann-body" className="block text-xs font-medium text-slate-300">
-                        Message Content
-                      </label>
-                      <textarea
-                        id="ann-body"
-                        rows={4}
-                        required
-                        maxLength={3000}
-                        value={annBody}
-                        onChange={(e) => setAnnBody(e.target.value)}
-                        placeholder="Write clear instructions, dates, or educational updates for students..."
-                        className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300">
-                        Optional Notice Banner Image (PNG / JPG / WebP, max 5 MB)
-                      </label>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-3">
-                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-medium text-cyan-300 hover:border-sky-400/50">
-                          <ImageIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                          {annImageUploadPct !== null
-                            ? `Uploading (${annImageUploadPct}%)...`
-                            : 'Upload Notice Image'}
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            onChange={(e) => handleNoticeImageUpload(e.target.files?.[0] || null)}
-                            className="hidden"
-                          />
-                        </label>
-                        {annImageUrl && (
-                          <button
-                            type="button"
-                            onClick={() => setAnnImageUrl('')}
-                            className="text-xs text-rose-300 hover:text-rose-200"
-                          >
-                            Remove attached image
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-6 pt-1 text-xs text-slate-300">
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={annIsImportant}
-                          onChange={(e) => setAnnIsImportant(e.target.checked)}
-                          className="rounded border-slate-600 bg-slate-900"
-                        />
-                        Feature in Home Page Important Message Popup
-                      </label>
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={annPublished}
-                          onChange={(e) => setAnnPublished(e.target.checked)}
-                          className="rounded border-slate-600 bg-slate-900"
-                        />
-                        Published (active to visitors &amp; students)
-                      </label>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={annBusy}
-                      className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
-                    >
-                      {annBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-                      {annBusy
-                        ? 'Saving...'
-                        : editingAnn
-                        ? 'Update Message'
-                        : 'Publish Message'}
-                    </button>
-                  </div>
-                </form>
-
-                {/* Live Home Popup Preview */}
-                <div className="glass-surface rounded-2xl p-6 xl:col-span-5">
-                  <p className="text-xs font-medium text-cyan-300">Live Home Popup Preview</p>
-                  <div className="mt-3 overflow-hidden rounded-2xl border border-cyan-400/35 bg-[#060c1b]">
-                    <div className="border-b border-slate-800 px-4 py-3 text-xs text-cyan-300">
-                      {annIsImportant ? 'Important Administrator Notice' : annCategory} ·{' '}
-                      <span className="font-mono text-slate-400 tabular-nums">
-                        {formatColomboDateTime(Date.now())}
+                        {note.published ? 'Published' : 'Draft'}
                       </span>
                     </div>
-                    {annImageUrl && (
-                      <div className="h-36 w-full overflow-hidden border-b border-slate-800">
-                        <ResilientImage
-                          src={annImageUrl}
-                          alt="Notice preview"
-                          fallbackLabel="Notice Image"
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                    )}
-                    <div className="p-4">
-                      <h3 className="font-display text-base font-bold text-slate-50">
-                        {annTitle.trim() || 'Announcement Title Preview'}
-                      </h3>
-                      <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-slate-300">
-                        {annBody.trim() ||
-                          'Your message content will appear here automatically on the Home page popup when published.'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Existing Announcements List */}
-              <div className="glass-surface rounded-2xl p-6">
-                <h3 className="text-base font-semibold text-slate-50">
-                  All Messages &amp; Announcements ({allAnnouncements.length})
-                </h3>
-                {allAnnouncements.length === 0 ? (
-                  <p className="mt-4 text-sm text-slate-400">No announcements created yet.</p>
-                ) : (
-                  <div className="mt-4 divide-y divide-slate-800/80">
-                    {allAnnouncements.map((ann) => (
-                      <div
-                        key={ann.id}
-                        className="flex flex-col justify-between gap-4 py-4 sm:flex-row sm:items-center"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
-                            <span className="text-cyan-300">
-                              {ann.isImportant ? 'Important Home Popup' : ann.category}
-                            </span>
-                            <span aria-hidden="true">·</span>
-                            <span>{ann.published ? 'Published' : 'Unpublished'}</span>
-                            <span aria-hidden="true">·</span>
-                            <span className="font-mono tabular-nums">
-                              {formatColomboDateTime(ann.publishedAtMs || ann.createdAtMs)}
-                            </span>
-                          </div>
-                          <h4 className="mt-1 truncate text-sm font-semibold text-slate-100">
-                            {ann.title}
-                          </h4>
-                          <p className="mt-0.5 line-clamp-2 text-xs text-slate-400">{ann.body}</p>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              updateAnnouncementDocument(ann, {
-                                published: !ann.published,
-                              }).then(() =>
-                                pushToast(
-                                  'info',
-                                  ann.published
-                                    ? 'Announcement unpublished'
-                                    : 'Announcement published'
-                                )
-                              )
-                            }
-                            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:text-white"
-                          >
-                            {ann.published ? 'Unpublish' : 'Publish'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingAnn(ann);
-                              setAnnTitle(ann.title);
-                              setAnnBody(ann.body);
-                              setAnnCategory(ann.category);
-                              setAnnPriority(ann.priority);
-                              setAnnIsImportant(ann.isImportant);
-                              setAnnImageUrl(ann.imageUrl || '');
-                              setAnnPublished(ann.published);
-                              window.scrollTo({ top: 0, behavior: 'smooth' });
-                            }}
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-cyan-300 hover:text-white"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setConfirmState({
-                                title: 'Delete Announcement',
-                                description: `Delete "${ann.title}" permanently? It will immediately stop appearing to visitors.`,
-                                action: async () => {
-                                  await deleteAnnouncementDocument(ann);
-                                  pushToast('info', 'Announcement deleted');
-                                },
-                              })
-                            }
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-800 px-3 py-1.5 text-xs font-medium text-rose-300 hover:border-rose-500/40"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* =============================================================== */}
-          {/* SECTION 4: EDUCATIONAL NOTES */}
-          {/* =============================================================== */}
-          {activeSection === 'notes' && (
-            <div className="space-y-6">
-              <form onSubmit={handleSaveNote} className="glass-surface rounded-2xl p-6">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-lg font-semibold text-slate-50">
-                      {editingNote
-                        ? `Edit Note: ${editingNote.title}`
-                        : 'Add Educational Note (Google Drive Link or PDF)'}
-                    </h2>
-                    <p className="mt-0.5 text-xs text-slate-400">
-                      Provide a Google Drive sharing URL or upload a binary PDF document directly.
+                    <h3 className="font-bold text-white">{note.title}</h3>
+                    <p className="text-xs text-slate-300 line-clamp-2 pt-1">{note.description}</p>
+                    <p className="text-[11px] text-slate-500 pt-2">
+                      {isGoogleDriveResource(note) ? 'Google Drive Link' : 'PDF Document'} ·{' '}
+                      {note.grade}
                     </p>
                   </div>
-                  {editingNote && (
+
+                  <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-800">
                     <button
                       type="button"
-                      onClick={resetNoteForm}
-                      className="text-xs text-slate-400 hover:text-white"
+                      onClick={() => handleToggleNotePublish(note)}
+                      title={note.published ? 'Unpublish' : 'Publish'}
+                      className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
                     >
-                      Cancel Edit
+                      {note.published ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4 text-emerald-300" />
+                      )}
                     </button>
-                  )}
-                </div>
-
-                {noteError && (
-                  <div
-                    role="alert"
-                    className="mt-4 rounded-xl border border-rose-500/40 bg-rose-950/30 p-3.5 text-xs text-rose-200"
-                  >
-                    {noteError}
-                  </div>
-                )}
-
-                {/* Document Source Mode Selector */}
-                <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-[#060b18]/80 p-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNoteSourceType('drive');
-                      setNoteError(null);
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors ${
-                      noteSourceType === 'drive'
-                        ? 'bg-sky-500 text-slate-950'
-                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    Google Drive Sharing Link
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNoteSourceType('pdf');
-                      setNoteError(null);
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors ${
-                      noteSourceType === 'pdf'
-                        ? 'bg-sky-500 text-slate-950'
-                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                    Upload PDF File Directly
-                  </button>
-                </div>
-
-                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div className="sm:col-span-2">
-                    <label htmlFor="adm-note-title" className="block text-xs font-medium text-slate-300">
-                      Document Title
-                    </label>
-                    <input
-                      id="adm-note-title"
-                      type="text"
-                      required
-                      maxLength={160}
-                      value={noteTitle}
-                      onChange={(e) => setNoteTitle(e.target.value)}
-                      placeholder="e.g., Operational Amplifiers & Sensor Interfacing"
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-note-subj" className="block text-xs font-medium text-slate-300">
-                      Subject / Technology Stream
-                    </label>
-                    <input
-                      id="adm-note-subj"
-                      type="text"
-                      required
-                      maxLength={80}
-                      value={noteSubject}
-                      onChange={(e) => setNoteSubject(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-note-grade" className="block text-xs font-medium text-slate-300">
-                      Grade / Academic Level
-                    </label>
-                    <input
-                      id="adm-note-grade"
-                      type="text"
-                      required
-                      maxLength={40}
-                      value={noteGrade}
-                      onChange={(e) => setNoteGrade(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label htmlFor="adm-note-tags" className="block text-xs font-medium text-slate-300">
-                      Topic Tags (comma-separated, up to 10 tags)
-                    </label>
-                    <input
-                      id="adm-note-tags"
-                      type="text"
-                      value={noteTagsInput}
-                      onChange={(e) => setNoteTagsInput(e.target.value)}
-                      placeholder="e.g., Microcontrollers, PWM, Electronics, Unit 04"
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label htmlFor="adm-note-desc" className="block text-xs font-medium text-slate-300">
-                      Description
-                    </label>
-                    <textarea
-                      id="adm-note-desc"
-                      rows={3}
-                      required
-                      maxLength={2000}
-                      value={noteDesc}
-                      onChange={(e) => setNoteDesc(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-note-thumb" className="block text-xs font-medium text-slate-300">
-                      Cover Preset
-                    </label>
-                    <select
-                      id="adm-note-thumb"
-                      value={noteThumb}
-                      onChange={(e) => setNoteThumb(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3 py-2 text-sm text-slate-100"
-                    >
-                      <option value={VISUAL_ASSETS.thumbEngineeringTech}>
-                        Engineering &amp; Embedded Systems
-                      </option>
-                      <option value={VISUAL_ASSETS.thumbBiosystemsTech}>
-                        Biosystems &amp; Instrumentation
-                      </option>
-                      <option value={VISUAL_ASSETS.thumbIctSystems}>
-                        ICT &amp; Network Systems
-                      </option>
-                    </select>
-                  </div>
-
-                  {noteSourceType === 'drive' ? (
-                    <div className="sm:col-span-2 rounded-xl border border-sky-400/25 bg-sky-950/15 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <label
-                          htmlFor="adm-note-drive-url"
-                          className="block text-xs font-semibold text-cyan-300"
-                        >
-                          Google Drive Sharing URL
-                        </label>
-                        {noteDriveUrl.trim() && validateGoogleDriveUrl(noteDriveUrl).valid && (
-                          <a
-                            href={validateGoogleDriveUrl(noteDriveUrl).normalizedUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs font-medium text-cyan-300 hover:text-cyan-200"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                            Test Google Drive Link
-                          </a>
-                        )}
-                      </div>
-                      <input
-                        id="adm-note-drive-url"
-                        type="url"
-                        required={noteSourceType === 'drive'}
-                        maxLength={1500}
-                        value={noteDriveUrl}
-                        onChange={(e) => {
-                          setNoteDriveUrl(e.target.value);
-                          if (noteError) setNoteError(null);
-                        }}
-                        placeholder="https://drive.google.com/file/d/1A2B3C4D5E6F/view?usp=sharing"
-                        className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-sky-400"
-                      />
-                      <p className="mt-2 text-[11px] leading-relaxed text-slate-300">
-                        Sharing permission check: in Google Drive, set General Access to{' '}
-                        <strong className="text-cyan-300">
-                          &ldquo;Anyone with the link &rarr; Viewer&rdquo;
-                        </strong>{' '}
-                        so students can open this note without requesting access.
-                      </p>
-                    </div>
-                  ) : (
-                    <div>
-                      <label htmlFor="adm-note-file" className="block text-xs font-medium text-slate-300">
-                        {editingNote && !isGoogleDriveResource(editingNote)
-                          ? 'Replace PDF File (Optional)'
-                          : 'Select PDF File (.pdf, max 25 MB)'}
-                      </label>
-                      <input
-                        id="adm-note-file"
-                        type="file"
-                        accept="application/pdf,.pdf"
-                        onChange={(e) => setNoteFile(e.target.files?.[0] || null)}
-                        className="mt-1.5 block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-cyan-300"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {noteUploadPct !== null && (
-                  <p className="mt-3 font-mono text-xs text-cyan-300 tabular-nums">
-                    Uploading validated PDF: {noteUploadPct}%
-                  </p>
-                )}
-
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-slate-800/80 pt-4">
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={notePublished}
-                      onChange={(e) => setNotePublished(e.target.checked)}
-                      className="rounded border-slate-600 bg-slate-900"
-                    />
-                    Publish to Note library
-                  </label>
-
-                  <button
-                    type="submit"
-                    disabled={noteBusy}
-                    className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
-                  >
-                    {noteSourceType === 'drive' ? (
-                      <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    ) : (
-                      <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                    )}
-                    {noteBusy
-                      ? 'Saving Note...'
-                      : editingNote
-                      ? 'Save Note Changes'
-                      : noteSourceType === 'drive'
-                      ? 'Save Google Drive Note'
-                      : 'Upload PDF Note'}
-                  </button>
-                </div>
-              </form>
-
-              {/* Notes Inventory */}
-              <div className="glass-surface rounded-2xl p-6">
-                <h3 className="text-base font-semibold text-slate-50">
-                  Educational Notes Inventory ({allNotes.length})
-                </h3>
-                {allNotes.length === 0 ? (
-                  <p className="mt-4 text-sm text-slate-400">No notes added yet.</p>
-                ) : (
-                  <div className="mt-4 divide-y divide-slate-800/80">
-                    {allNotes.map((n) => {
-                      const isDrive = isGoogleDriveResource(n);
-                      const targetUrl = getResourceTargetUrl(n);
-                      const linkedRankCount = allCustomRankEntries.filter(
-                        (e) => e.linkedItemType === 'note' && e.linkedItemId === n.id
-                      ).length;
-
-                      return (
-                        <div
-                          key={n.id}
-                          className="flex flex-col justify-between gap-4 py-4 sm:flex-row sm:items-center"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-xs text-slate-400">
-                              <span className="text-cyan-300">{n.subject}</span> · {n.grade} ·{' '}
-                              <span className={isDrive ? 'text-sky-300 font-medium' : ''}>
-                                {isDrive ? 'Google Drive Link' : formatBytes(n.fileSize)}
-                              </span>{' '}
-                              · {n.published ? 'Published' : 'Draft'}
-                            </p>
-                            <h4 className="mt-1 truncate text-sm font-semibold text-slate-100">
-                              {n.title}
-                            </h4>
-                            {n.tags.length > 0 && (
-                              <p className="mt-0.5 truncate text-xs text-slate-500">
-                                {n.tags.join(' · ')}
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2 shrink-0">
-                            {targetUrl && (
-                              <a
-                                href={targetUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-sky-400/50 hover:text-white"
-                              >
-                                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                                Open
-                              </a>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingNote(n);
-                                setNoteTitle(n.title);
-                                setNoteSubject(n.subject);
-                                setNoteGrade(n.grade);
-                                setNoteTagsInput((n.tags || []).join(', '));
-                                setNoteDesc(n.description);
-                                setNoteThumb(n.thumbnailUrl || VISUAL_ASSETS.thumbEngineeringTech);
-                                setNotePublished(n.published);
-                                const driveMode = isGoogleDriveResource(n);
-                                setNoteSourceType(driveMode ? 'drive' : 'pdf');
-                                setNoteDriveUrl(driveMode ? getResourceTargetUrl(n) : '');
-                                setNoteFile(null);
-                                setNoteError(null);
-                                window.scrollTo({ top: 0, behavior: 'smooth' });
-                              }}
-                              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-cyan-300 hover:text-white"
-                            >
-                              <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setConfirmState({
-                                  title: 'Delete Educational Note',
-                                  description:
-                                    linkedRankCount > 0
-                                      ? `Permanently delete "${n.title}"? ${linkedRankCount} Rank Board ${
-                                          linkedRankCount === 1 ? 'entry' : 'entries'
-                                        } explicitly linked to this note will also be removed automatically. Unrelated Rank Board entries will not be affected.`
-                                      : `Permanently delete "${n.title}" from the Educational Notes library?`,
-                                  confirmLabel: 'Delete Note',
-                                  action: async () => {
-                                    const { removedRankEntries } = await deleteNoteDocument(n);
-                                    pushToast(
-                                      'info',
-                                      'Educational note deleted',
-                                      removedRankEntries > 0
-                                        ? `Removed ${removedRankEntries} linked Rank Board ${
-                                            removedRankEntries === 1 ? 'entry' : 'entries'
-                                          }.`
-                                        : undefined
-                                    );
-                                  },
-                                })
-                              }
-                              className="inline-flex items-center gap-1 rounded-lg border border-slate-800 px-3 py-1.5 text-xs font-medium text-rose-300 hover:border-rose-500/40"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* =============================================================== */}
-          {/* SECTION 5: PAST PAPER MANAGEMENT (GOOGLE DRIVE OR PDF) */}
-          {/* =============================================================== */}
-          {activeSection === 'papers' && (
-            <div className="space-y-6">
-              <form onSubmit={handleSavePaper} className="glass-surface rounded-2xl p-6">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-lg font-semibold text-slate-50">
-                      {editingPaper
-                        ? `Edit Past Paper: ${editingPaper.title}`
-                        : 'Add Past Examination Paper (Google Drive Link or PDF)'}
-                    </h2>
-                    <p className="mt-0.5 text-xs text-slate-400">
-                      Provide a Google Drive sharing link or upload a PDF examination paper directly.
-                    </p>
-                  </div>
-                  {editingPaper && (
                     <button
                       type="button"
-                      onClick={resetPaperForm}
-                      className="text-xs text-slate-400 hover:text-white"
+                      onClick={() => handleOpenNoteModal(note)}
+                      title="Edit note"
+                      className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
                     >
-                      Cancel Edit
+                      <Edit2 className="h-4 w-4" />
                     </button>
-                  )}
-                </div>
-
-                {paperError && (
-                  <div
-                    role="alert"
-                    className="mt-4 rounded-xl border border-rose-500/40 bg-rose-950/30 p-3.5 text-xs text-rose-200"
-                  >
-                    {paperError}
-                  </div>
-                )}
-
-                {/* Document Source Mode Selector */}
-                <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-[#060b18]/80 p-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaperSourceType('drive');
-                      setPaperError(null);
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors ${
-                      paperSourceType === 'drive'
-                        ? 'bg-sky-500 text-slate-950'
-                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    Google Drive Sharing Link
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaperSourceType('pdf');
-                      setPaperError(null);
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors ${
-                      paperSourceType === 'pdf'
-                        ? 'bg-sky-500 text-slate-950'
-                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                    Upload PDF File Directly
-                  </button>
-                </div>
-
-                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  <div className="sm:col-span-2 lg:col-span-3">
-                    <label htmlFor="adm-paper-title" className="block text-xs font-medium text-slate-300">
-                      Document Title
-                    </label>
-                    <input
-                      id="adm-paper-title"
-                      type="text"
-                      required
-                      maxLength={160}
-                      value={paperTitle}
-                      onChange={(e) => setPaperTitle(e.target.value)}
-                      placeholder="e.g., G.C.E. A/L Engineering Technology 2025 — Paper I & II"
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-paper-subj" className="block text-xs font-medium text-slate-300">
-                      Subject
-                    </label>
-                    <input
-                      id="adm-paper-subj"
-                      type="text"
-                      required
-                      maxLength={80}
-                      value={paperSubject}
-                      onChange={(e) => setPaperSubject(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-paper-cat" className="block text-xs font-medium text-slate-300">
-                      Category
-                    </label>
-                    <input
-                      id="adm-paper-cat"
-                      type="text"
-                      required
-                      maxLength={60}
-                      value={paperCategory}
-                      onChange={(e) => setPaperCategory(e.target.value)}
-                      placeholder="National Past Paper / Model Paper"
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-paper-year" className="block text-xs font-medium text-slate-300">
-                      Examination Year
-                    </label>
-                    <input
-                      id="adm-paper-year"
-                      type="number"
-                      required
-                      min={1990}
-                      max={2100}
-                      value={paperYear}
-                      onChange={(e) => setPaperYear(Number(e.target.value))}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 font-mono text-sm text-slate-100 tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-paper-grade" className="block text-xs font-medium text-slate-300">
-                      Grade / Level
-                    </label>
-                    <input
-                      id="adm-paper-grade"
-                      type="text"
-                      required
-                      maxLength={40}
-                      value={paperGrade}
-                      onChange={(e) => setPaperGrade(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-paper-type" className="block text-xs font-medium text-slate-300">
-                      Examination Type
-                    </label>
-                    <select
-                      id="adm-paper-type"
-                      value={paperType}
-                      onChange={(e) => setPaperType(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3 py-2 text-sm text-slate-100"
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget({ kind: 'note', item: note })}
+                      title="Delete note"
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-rose-300 hover:bg-rose-500/20"
                     >
-                      <option value="National A/L">National A/L</option>
-                      <option value="Provincial Term Test">Provincial Term Test</option>
-                      <option value="Model Paper">Model Paper</option>
-                      <option value="School Term Paper">School Term Paper</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label htmlFor="adm-paper-lang" className="block text-xs font-medium text-slate-300">
-                      Language
-                    </label>
-                    <select
-                      id="adm-paper-lang"
-                      value={paperLang}
-                      onChange={(e) => setPaperLang(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3 py-2 text-sm text-slate-100"
-                    >
-                      <option value="English">English</option>
-                      <option value="Sinhala">Sinhala</option>
-                      <option value="Tamil">Tamil</option>
-                    </select>
-                  </div>
-
-                  {paperSourceType === 'drive' ? (
-                    <div className="sm:col-span-2 lg:col-span-3 rounded-xl border border-sky-400/25 bg-sky-950/15 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <label
-                          htmlFor="adm-paper-drive-url"
-                          className="block text-xs font-semibold text-cyan-300"
-                        >
-                          Google Drive Sharing URL
-                        </label>
-                        {paperDriveUrl.trim() && validateGoogleDriveUrl(paperDriveUrl).valid && (
-                          <a
-                            href={validateGoogleDriveUrl(paperDriveUrl).normalizedUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs font-medium text-cyan-300 hover:text-cyan-200"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                            Test Google Drive Link
-                          </a>
-                        )}
-                      </div>
-                      <input
-                        id="adm-paper-drive-url"
-                        type="url"
-                        required={paperSourceType === 'drive'}
-                        maxLength={1500}
-                        value={paperDriveUrl}
-                        onChange={(e) => {
-                          setPaperDriveUrl(e.target.value);
-                          if (paperError) setPaperError(null);
-                        }}
-                        placeholder="https://drive.google.com/file/d/1A2B3C4D5E6F/view?usp=sharing"
-                        className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-sky-400"
-                      />
-                      <p className="mt-2 text-[11px] leading-relaxed text-slate-300">
-                        Sharing permission check: in Google Drive, set General Access to{' '}
-                        <strong className="text-cyan-300">
-                          &ldquo;Anyone with the link &rarr; Viewer&rdquo;
-                        </strong>{' '}
-                        so intended users can open the past paper immediately.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="sm:col-span-2 lg:col-span-3">
-                      <label htmlFor="adm-paper-file" className="block text-xs font-medium text-slate-300">
-                        {editingPaper && !isGoogleDriveResource(editingPaper)
-                          ? 'Replace PDF File (Optional)'
-                          : 'Select PDF File (.pdf, max 25 MB)'}
-                      </label>
-                      <input
-                        id="adm-paper-file"
-                        type="file"
-                        accept="application/pdf,.pdf"
-                        onChange={(e) => setPaperFile(e.target.files?.[0] || null)}
-                        className="mt-1.5 block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-cyan-300"
-                      />
-                    </div>
-                  )}
-
-                  <div className="sm:col-span-2 lg:col-span-3">
-                    <label htmlFor="adm-paper-desc" className="block text-xs font-medium text-slate-300">
-                      Description / Marking Notes
-                    </label>
-                    <textarea
-                      id="adm-paper-desc"
-                      rows={2}
-                      maxLength={1500}
-                      value={paperDesc}
-                      onChange={(e) => setPaperDesc(e.target.value)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#060b18] px-3.5 py-2 text-sm text-slate-100"
-                    />
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
                 </div>
-
-                {paperUploadPct !== null && (
-                  <p className="mt-3 font-mono text-xs text-cyan-300 tabular-nums">
-                    Uploading validated PDF: {paperUploadPct}%
-                  </p>
-                )}
-
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-slate-800/80 pt-4">
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={paperPublished}
-                      onChange={(e) => setPaperPublished(e.target.checked)}
-                      className="rounded border-slate-600 bg-slate-900"
-                    />
-                    Publish to Past Papers archive
-                  </label>
-
-                  <button
-                    type="submit"
-                    disabled={paperBusy}
-                    className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
-                  >
-                    {paperSourceType === 'drive' ? (
-                      <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    ) : (
-                      <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                    )}
-                    {paperBusy
-                      ? 'Saving Paper...'
-                      : editingPaper
-                      ? 'Save Paper Changes'
-                      : paperSourceType === 'drive'
-                      ? 'Save Google Drive Paper'
-                      : 'Upload PDF Paper'}
-                  </button>
-                </div>
-              </form>
-
-              <div className="glass-surface rounded-2xl p-6">
-                <h3 className="text-base font-semibold text-slate-50">
-                  Past Examination Papers Inventory ({allPapers.length})
-                </h3>
-                {allPapers.length === 0 ? (
-                  <p className="mt-4 text-sm text-slate-400">No past papers added yet.</p>
-                ) : (
-                  <div className="mt-4 divide-y divide-slate-800/80">
-                    {allPapers.map((p) => {
-                      const isDrive = isGoogleDriveResource(p);
-                      const targetUrl = getResourceTargetUrl(p);
-                      const linkedRankCount = allCustomRankEntries.filter(
-                        (e) => e.linkedItemType === 'paper' && e.linkedItemId === p.id
-                      ).length;
-
-                      return (
-                        <div
-                          key={p.id}
-                          className="flex flex-col justify-between gap-4 py-4 sm:flex-row sm:items-center"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-xs text-slate-400">
-                              <span className="text-cyan-300">{p.subject}</span> · {p.year} ·{' '}
-                              {p.category || p.examType} · {p.language} ·{' '}
-                              <span className={isDrive ? 'text-sky-300 font-medium' : ''}>
-                                {isDrive ? 'Google Drive Link' : formatBytes(p.fileSize)}
-                              </span>{' '}
-                              · {p.published ? 'Published' : 'Draft'}
-                            </p>
-                            <h4 className="mt-1 truncate text-sm font-semibold text-slate-100">
-                              {p.title}
-                            </h4>
-                            {linkedRankCount > 0 && (
-                              <p className="mt-0.5 text-[11px] text-amber-300">
-                                {linkedRankCount} linked Rank Board{' '}
-                                {linkedRankCount === 1 ? 'entry' : 'entries'}
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2 shrink-0">
-                            {targetUrl && (
-                              <a
-                                href={targetUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-sky-400/50 hover:text-white"
-                              >
-                                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                                Open
-                              </a>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingPaper(p);
-                                setPaperTitle(p.title);
-                                setPaperSubject(p.subject);
-                                setPaperCategory(p.category || p.examType);
-                                setPaperYear(p.year);
-                                setPaperGrade(p.grade);
-                                setPaperType(p.examType);
-                                setPaperLang(p.language);
-                                setPaperDesc(p.description);
-                                setPaperPublished(p.published);
-                                const driveMode = isGoogleDriveResource(p);
-                                setPaperSourceType(driveMode ? 'drive' : 'pdf');
-                                setPaperDriveUrl(driveMode ? getResourceTargetUrl(p) : '');
-                                setPaperFile(null);
-                                setPaperError(null);
-                                window.scrollTo({ top: 0, behavior: 'smooth' });
-                              }}
-                              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-cyan-300 hover:text-white"
-                            >
-                              <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setConfirmState({
-                                  title: 'Delete Past Examination Paper',
-                                  description:
-                                    linkedRankCount > 0
-                                      ? `Permanently delete "${p.title}"? ${linkedRankCount} Rank Board ${
-                                          linkedRankCount === 1 ? 'entry' : 'entries'
-                                        } explicitly linked to this Past Paper will also be automatically removed and remaining ranks recalculated. Unrelated Rank Board entries will remain untouched.`
-                                      : `Permanently delete "${p.title}" from the Past Papers archive?`,
-                                  confirmLabel: 'Delete Paper',
-                                  action: async () => {
-                                    const { removedRankEntries } = await deletePaperDocument(p);
-                                    pushToast(
-                                      'info',
-                                      'Past paper deleted',
-                                      removedRankEntries > 0
-                                        ? `Automatically removed ${removedRankEntries} linked Rank Board ${
-                                            removedRankEntries === 1 ? 'entry' : 'entries'
-                                          }.`
-                                        : undefined
-                                    );
-                                  },
-                                })
-                              }
-                              className="inline-flex items-center gap-1 rounded-lg border border-slate-800 px-3 py-1.5 text-xs font-medium text-rose-300 hover:border-rose-500/40"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* =============================================================== */}
-          {/* SECTION 6: ONLINE EXAM MANAGEMENT */}
-          {/* =============================================================== */}
-          {activeSection === 'exams' && <AdminOnlineExamManagementPanel />}
-
-          {/* =============================================================== */}
-          {/* SECTION 7: EXAMINATION RESULTS */}
-          {/* =============================================================== */}
-          {activeSection === 'results' && <AdminExamResultsPanel />}
-
-          {/* =============================================================== */}
-          {/* SECTION 8: DYNAMIC & MANUAL RANK BOARD MANAGEMENT */}
-          {/* =============================================================== */}
-          {activeSection === 'rank-board' && <AdminRankBoardManager />}
-
-          {/* =============================================================== */}
-          {/* SECTION 9: WEBSITE STATISTICS */}
-          {/* =============================================================== */}
-          {activeSection === 'statistics' && (
-            <div className="space-y-6">
-              <div className="glass-surface flex flex-wrap items-center justify-between gap-4 rounded-2xl p-6">
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-50">
-                    Real-Time Cloud Firestore Metrics
-                  </h2>
-                  <p className="mt-1 text-xs text-slate-400">
-                    Counters reflect live database documents with zero synthetic numbers.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={reconcilingStats}
-                  onClick={async () => {
-                    setReconcilingStats(true);
-                    try {
-                      await reconcilePlatformStats();
-                      pushToast('success', 'Platform statistics synchronized');
-                    } catch (err) {
-                      pushToast(
-                        'error',
-                        'Failed to reconcile stats',
-                        err instanceof Error ? err.message : ''
-                      );
-                    } finally {
-                      setReconcilingStats(false);
-                    }
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
-                >
-                  <RefreshCw
-                    className={`h-3.5 w-3.5 ${reconcilingStats ? 'animate-spin' : ''}`}
-                    aria-hidden="true"
-                  />
-                  {reconcilingStats ? 'Reconciling...' : 'Reconcile Counters'}
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                {[
-                  { label: 'Total Registered Users', val: Math.max(stats.totalUsers, allUsers.length) },
-                  { label: 'Published PDF Documents', val: stats.totalPdfs },
-                  { label: 'Published Study Notes', val: stats.totalNotes },
-                  { label: 'Published Past Papers', val: stats.totalPapers },
-                  { label: 'Published Online Exams', val: stats.totalExams },
-                  {
-                    label: 'Completed Exam Attempts',
-                    val: Math.max(stats.completedAttempts || 0, allExamAttempts.length),
-                  },
-                  {
-                    label: 'Published Ranked Results',
-                    val: Math.max(
-                      stats.publishedResults || 0,
-                      allRankEntries.length + allCustomRankEntries.length
-                    ),
-                  },
-                  {
-                    label: 'Published Rank Boards',
-                    val: allRankBoards.filter((b) => b.published).length,
-                  },
-                  { label: 'Active Announcements', val: allAnnouncements.filter((a) => a.published).length },
-                ].map((m) => (
-                  <div key={m.label} className="glass-surface rounded-2xl p-5">
-                    <p className="text-xs text-slate-400">{m.label}</p>
-                    <p className="mt-1.5 font-mono text-2xl font-bold text-slate-50 tabular-nums">
-                      {m.val.toLocaleString()}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* =============================================================== */}
-          {/* SECTION 10: ADMIN SETTINGS */}
-          {/* =============================================================== */}
-          {activeSection === 'settings' && (
-            <div className="space-y-6">
-              <div className="glass-surface rounded-2xl p-6 text-xs text-slate-300">
-                <div className="flex items-start gap-3">
-                  <ShieldCheck className="mt-0.5 h-5 w-5 text-cyan-300" aria-hidden="true" />
-                  <div>
-                    <h2 className="text-lg font-semibold text-slate-50">
-                      Administrator Security &amp; Infrastructure
-                    </h2>
-                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                      The administrator dashboard is securely authorized exclusively for <strong className="text-cyan-300">hiranyaudakara2@gmail.com</strong> via Firebase Google Sign-In and Cloud Firestore security rules.
-                    </p>
-                  </div>
-                </div>
-                <dl className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 border-t border-slate-800 pt-4">
-                  <div>
-                    <dt className="text-slate-400">Firebase Project ID</dt>
-                    <dd className="mt-0.5 font-mono text-cyan-300">{FIREBASE_PROJECT_ID}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-slate-400">Cloud Firestore Database ID</dt>
-                    <dd className="mt-0.5 font-mono text-slate-200 break-all">
-                      {FIRESTORE_DATABASE_ID}
-                    </dd>
-                  </div>
-                </dl>
-              </div>
+              ))}
             </div>
           )}
         </div>
-      </div>
+      )}
 
+      {/* Tab 2: Past Papers Management */}
+      {activeTab === 'papers' && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-xl font-bold text-white">Past Papers Management</h2>
+            <button
+              type="button"
+              onClick={() => handleOpenPaperModal()}
+              className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-white hover:bg-cyan-400 shadow-md shadow-cyan-500/20"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Add Past Paper</span>
+            </button>
+          </div>
+
+          {filteredPapers.length === 0 ? (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center text-sm text-slate-400">
+              No past papers found. Click <strong className="text-slate-200">Add Past Paper</strong> to upload a PDF or attach a Google Drive link.
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredPapers.map((paper) => (
+                <div
+                  key={paper.id}
+                  className="glass-panel flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4"
+                >
+                  <div>
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                      <span className="font-semibold text-sky-300">
+                        {paper.category} ({paper.year})
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-full font-semibold ${
+                          paper.published
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : 'bg-rose-500/15 text-rose-300'
+                        }`}
+                      >
+                        {paper.published ? 'Published' : 'Draft'}
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-white">{paper.title}</h3>
+                    <p className="text-xs text-slate-300 line-clamp-2 pt-1">{paper.description}</p>
+                    <p className="text-[11px] text-slate-500 pt-2">
+                      {isGoogleDriveResource(paper) ? 'Google Drive Link' : 'PDF Document'} ·{' '}
+                      {paper.subject} · {paper.language}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => handleTogglePaperPublish(paper)}
+                      title={paper.published ? 'Unpublish' : 'Publish'}
+                      className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
+                    >
+                      {paper.published ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4 text-emerald-300" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenPaperModal(paper)}
+                      title="Edit paper"
+                      className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
+                    >
+                      <Edit2 className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget({ kind: 'paper', item: paper })}
+                      title="Delete paper"
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-rose-300 hover:bg-rose-500/20"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 3: Online Exams & Student Grading */}
+      {activeTab === 'exams' && (
+        <div className="space-y-12">
+          <AdminExamManager />
+          <div className="border-t border-slate-800 pt-10">
+            <AdminExamResultsPanel />
+          </div>
+        </div>
+      )}
+
+      {/* Tab 4: Announcements & Home Popup Notices */}
+      {activeTab === 'announcements' && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold text-white">Announcements &amp; Important Notices</h2>
+              <p className="text-xs text-slate-400 pt-0.5">
+                Important notices automatically appear as a home popup for students on any device.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenAnnModal()}
+              className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-white hover:bg-cyan-400 shadow-md shadow-cyan-500/20"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Publish Announcement</span>
+            </button>
+          </div>
+
+          {filteredAnnouncements.length === 0 ? (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center text-sm text-slate-400">
+              No announcements created yet.
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredAnnouncements.map((ann) => (
+                <div
+                  key={ann.id}
+                  className="glass-panel flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4"
+                >
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs mb-2">
+                      <span className="font-semibold text-amber-300">{ann.category}</span>
+                      <div className="flex items-center gap-1.5">
+                        {ann.isImportant && (
+                          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                            Popup
+                          </span>
+                        )}
+                        <span
+                          className={`px-2 py-0.5 rounded-full font-semibold ${
+                            ann.published
+                              ? 'bg-emerald-500/15 text-emerald-300'
+                              : 'bg-rose-500/15 text-rose-300'
+                          }`}
+                        >
+                          {ann.published ? 'Published' : 'Draft'}
+                        </span>
+                      </div>
+                    </div>
+                    <h3 className="font-bold text-white line-clamp-2">{ann.title}</h3>
+                    <p className="text-xs text-slate-300 line-clamp-3 pt-1">{ann.body}</p>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAnnPublish(ann)}
+                      title={ann.published ? 'Unpublish' : 'Publish'}
+                      className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
+                    >
+                      {ann.published ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4 text-emerald-300" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenAnnModal(ann)}
+                      title="Edit announcement"
+                      className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
+                    >
+                      <Edit2 className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget({ kind: 'announcement', item: ann })}
+                      title="Delete announcement"
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-rose-300 hover:bg-rose-500/20"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 5: Rank Boards */}
+      {activeTab === 'rankboards' && <AdminRankBoardManager />}
+
+      {/* Tab 6: Security, Cross-Device Password Sync & Audit Logs */}
+      {activeTab === 'security' && (
+        <div className="space-y-8">
+          {/* Cross-Device Admin Password Sync Card */}
+          <div className="glass-panel rounded-2xl border border-sky-400/25 bg-slate-900/80 p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-sky-500/15 p-2.5 text-cyan-300 border border-sky-400/30">
+                <KeyRound className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-white">
+                  Cross-Device Admin Password Cloud Write Sync
+                </h2>
+                <p className="text-xs text-slate-300 leading-relaxed mt-1">
+                  Link your Admin Password directly to <code className="font-mono text-cyan-300">{BOOTSTRAPPED_ADMIN_EMAIL}</code> in Firebase Authentication so signing in with your password on any mobile device, tablet, or desktop browser grants instant Firestore &amp; Cloud Storage write authority without needing Google Sign-In.
+                </p>
+              </div>
+            </div>
+
+            {isPrimaryOwnerSignedIn ? (
+              <form
+                onSubmit={handleSyncAdminPassword}
+                className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 pt-2"
+              >
+                <div className="flex-1 space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Admin Password to Sync (matches your Admin Login Password)
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={syncPassword}
+                    onChange={(e) => setSyncPassword(e.target.value)}
+                    placeholder="Enter your Admin Password (e.g. Hirusa@#123)"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm text-white focus:border-cyan-400 focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={syncBusy || syncPassword.length < 6}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-500 px-5 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+                >
+                  {syncBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  <span>{syncBusy ? 'Syncing...' : 'Sync Cross-Device Password'}</span>
+                </button>
+              </form>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-xs text-slate-300">
+                <span>
+                  Sign in once with Google as <strong className="text-white">{BOOTSTRAPPED_ADMIN_EMAIL}</strong> to link your cross-device password.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => signInWithGoogle('admin')}
+                  className="rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400"
+                >
+                  Sign In with Google
+                </button>
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-400">
+              Prerequisite: Ensure <strong className="text-slate-200">Email/Password</strong> sign-in is enabled in{' '}
+              <a
+                href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/providers`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-cyan-300 underline hover:text-cyan-200"
+              >
+                Firebase Console → Authentication → Sign-in method
+              </a>
+              .
+            </p>
+          </div>
+
+          {/* Co-Administrator Access Management */}
+          {isPrimaryOwnerSignedIn && allUsers.length > 0 && (
+            <div className="glass-panel rounded-2xl border border-slate-800 bg-slate-900/80 p-6 space-y-4">
+              <div className="flex items-center gap-2.5">
+                <Users className="h-5 w-5 text-cyan-400" />
+                <h2 className="text-lg font-bold text-white">Administrator Privilege Directory</h2>
+              </div>
+              <div className="space-y-2 max-h-72 overflow-y-auto">
+                {allUsers.slice(0, 30).map((u) => {
+                  const isOwner =
+                    u.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+                  const isAdminRole =
+                    isOwner ||
+                    u.role === 'admin' ||
+                    allAdmins.some((a) => a.uid === u.uid);
+                  return (
+                    <div
+                      key={u.uid}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs"
+                    >
+                      <div>
+                        <p className="font-semibold text-slate-100">{u.displayName}</p>
+                        <p className="font-mono text-slate-400">{u.email}</p>
+                      </div>
+                      {isOwner ? (
+                        <span className="rounded-full bg-amber-500/15 px-3 py-1 font-semibold text-amber-300">
+                          Primary Owner
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={roleBusyUid === u.uid}
+                          onClick={async () => {
+                            setRoleBusyUid(u.uid);
+                            try {
+                              if (isAdminRole) {
+                                await revokeAdminPrivilege(u.uid, u.email);
+                                pushToast('info', 'Admin Revoked', `Revoked ${u.email}`);
+                              } else {
+                                await grantAdminPrivilege(u.uid, u.email);
+                                pushToast('success', 'Admin Granted', `Granted ${u.email}`);
+                              }
+                            } catch (err: any) {
+                              pushToast('error', 'Role Change Failed', err?.message || '');
+                            } finally {
+                              setRoleBusyUid(null);
+                            }
+                          }}
+                          className={`rounded-lg px-3 py-1.5 font-semibold ${
+                            isAdminRole
+                              ? 'border border-rose-500/40 bg-rose-950/40 text-rose-200 hover:bg-rose-900/50'
+                              : 'border border-sky-400/40 bg-sky-500/15 text-cyan-200 hover:bg-sky-500/25'
+                          }`}
+                        >
+                          {isAdminRole ? 'Revoke Admin' : 'Grant Co-Admin'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Security Audit Logs */}
+          <div className="space-y-4">
+            <h2 className="text-xl font-bold text-white">Audit Logs &amp; Security History</h2>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 space-y-4">
+              {auditLogs.length === 0 ? (
+                <p className="text-sm text-slate-400">No security audit log entries recorded yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {auditLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between rounded-xl bg-slate-950/60 p-3 text-xs border border-slate-800/80 gap-2"
+                    >
+                      <div>
+                        <span className="font-bold text-cyan-300">{log.action}</span>
+                        <span className="text-slate-300 ml-2">{log.summary}</span>
+                      </div>
+                      <span className="text-slate-500 font-mono">
+                        {new Date(log.createdAtMs).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Note Create / Edit Modal */}
+      {showNoteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <form
+            onSubmit={handleSaveNote}
+            className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4 max-h-[92dvh] overflow-y-auto"
+          >
+            <h3 className="text-lg font-bold text-white">
+              {editingNote ? 'Edit Educational Note' : 'Create Educational Note'}
+            </h3>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">Note Title</label>
+              <input
+                type="text"
+                required
+                value={noteTitle}
+                onChange={(e) => setNoteTitle(e.target.value)}
+                placeholder="e.g. Microcontroller Interfacing & PWM Control"
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400 focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Subject</label>
+                <select
+                  value={noteSubject}
+                  onChange={(e) => setNoteSubject(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-cyan-400"
+                >
+                  {SUBJECT_OPTIONS.map((sub) => (
+                    <option key={sub} value={sub}>
+                      {sub}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Grade Level</label>
+                <input
+                  type="text"
+                  required
+                  value={noteGrade}
+                  onChange={(e) => setNoteGrade(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-cyan-400"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">Description</label>
+              <textarea
+                rows={3}
+                required
+                value={noteDesc}
+                onChange={(e) => setNoteDesc(e.target.value)}
+                placeholder="Concise summary of topics covered in this study module..."
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">
+                Topic Tags (comma-separated)
+              </label>
+              <input
+                type="text"
+                value={noteTags}
+                onChange={(e) => setNoteTags(e.target.value)}
+                placeholder="e.g. Logic Gates, ADC, Networking"
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400"
+              />
+            </div>
+
+            {/* Source Type Toggle: Cloud PDF Upload vs Google Drive Link */}
+            <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNoteSourceType('pdf')}
+                  className={`flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
+                    noteSourceType === 'pdf'
+                      ? 'bg-cyan-500 text-slate-950'
+                      : 'border border-slate-700 bg-slate-900 text-slate-300'
+                  }`}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  <span>PDF Upload / URL</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNoteSourceType('drive')}
+                  className={`flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
+                    noteSourceType === 'drive'
+                      ? 'bg-cyan-500 text-slate-950'
+                      : 'border border-slate-700 bg-slate-900 text-slate-300'
+                  }`}
+                >
+                  <LinkIcon className="h-3.5 w-3.5" />
+                  <span>Google Drive Link</span>
+                </button>
+              </div>
+
+              {noteSourceType === 'pdf' ? (
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-cyan-400/40 bg-cyan-500/15 px-3.5 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25">
+                      <Upload className="h-3.5 w-3.5" />
+                      <span>Upload PDF to Cloud Storage</span>
+                      <input
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        onChange={handleNoteFileSelect}
+                        className="hidden"
+                      />
+                    </label>
+                    {noteFileSize > 0 && (
+                      <span className="text-[11px] font-mono text-emerald-300">
+                        {noteFileName} ({formatBytes(noteFileSize)})
+                      </span>
+                    )}
+                  </div>
+
+                  {noteUploadProgress !== null && (
+                    <div className="space-y-1">
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full bg-cyan-400 transition-all"
+                          style={{ width: `${noteUploadProgress}%` }}
+                        />
+                      </div>
+                      <p className="text-[11px] font-mono text-cyan-300">
+                        Uploading PDF... {noteUploadProgress}%
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-400">
+                      Direct PDF URL (populated automatically on upload)
+                    </label>
+                    <input
+                      type="text"
+                      value={notePdfUrl}
+                      onChange={(e) => setNotePdfUrl(e.target.value)}
+                      placeholder="https://firebasestorage.googleapis.com/... or /api/curriculum-pdf/..."
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-cyan-400"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Google Drive Sharing Link (Anyone with the link can view)
+                  </label>
+                  <input
+                    type="url"
+                    required
+                    value={noteDriveUrl}
+                    onChange={(e) => setNoteDriveUrl(e.target.value)}
+                    placeholder="https://drive.google.com/file/d/.../view?usp=sharing"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-cyan-400"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                id="notePub"
+                checked={notePublished}
+                onChange={(e) => setNotePublished(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-950 text-cyan-500"
+              />
+              <label htmlFor="notePub" className="text-xs text-slate-300">
+                Publish immediately on Home &amp; Notes pages
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={savingModal}
+                onClick={() => setShowNoteModal(false)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingModal || noteUploadProgress !== null}
+                className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-5 py-2 text-xs font-semibold text-white hover:bg-cyan-400 disabled:opacity-50"
+              >
+                {savingModal && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>Save Educational Note</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Paper Create / Edit Modal */}
+      {showPaperModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <form
+            onSubmit={handleSavePaper}
+            className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4 max-h-[92dvh] overflow-y-auto"
+          >
+            <h3 className="text-lg font-bold text-white">
+              {editingPaper ? 'Edit Past Paper' : 'Add Past Paper'}
+            </h3>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">Paper Title</label>
+              <input
+                type="text"
+                required
+                value={paperTitle}
+                onChange={(e) => setPaperTitle(e.target.value)}
+                placeholder="e.g. G.C.E. A/L Engineering Technology 2025 — Paper I & II"
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400 focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Subject</label>
+                <select
+                  value={paperSubject}
+                  onChange={(e) => setPaperSubject(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-cyan-400"
+                >
+                  {SUBJECT_OPTIONS.map((sub) => (
+                    <option key={sub} value={sub}>
+                      {sub}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Year</label>
+                <input
+                  type="number"
+                  min={2000}
+                  max={2100}
+                  required
+                  value={paperYear}
+                  onChange={(e) => setPaperYear(Number(e.target.value))}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-cyan-400"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Category</label>
+                <input
+                  type="text"
+                  required
+                  value={paperCategory}
+                  onChange={(e) => setPaperCategory(e.target.value)}
+                  placeholder="National Past Paper"
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-cyan-400"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Grade</label>
+                <input
+                  type="text"
+                  required
+                  value={paperGrade}
+                  onChange={(e) => setPaperGrade(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-cyan-400"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Medium / Language</label>
+                <select
+                  value={paperLanguage}
+                  onChange={(e) => setPaperLanguage(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-cyan-400"
+                >
+                  <option value="English">English</option>
+                  <option value="Sinhala">Sinhala</option>
+                  <option value="Tamil">Tamil</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">Description</label>
+              <textarea
+                rows={2}
+                required
+                value={paperDesc}
+                onChange={(e) => setPaperDesc(e.target.value)}
+                placeholder="Structured, MCQ, or marking scheme details..."
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400"
+              />
+            </div>
+
+            {/* Source Type Toggle: Cloud PDF Upload vs Google Drive Link */}
+            <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaperSourceType('pdf')}
+                  className={`flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
+                    paperSourceType === 'pdf'
+                      ? 'bg-cyan-500 text-slate-950'
+                      : 'border border-slate-700 bg-slate-900 text-slate-300'
+                  }`}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  <span>PDF Upload / URL</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaperSourceType('drive')}
+                  className={`flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
+                    paperSourceType === 'drive'
+                      ? 'bg-cyan-500 text-slate-950'
+                      : 'border border-slate-700 bg-slate-900 text-slate-300'
+                  }`}
+                >
+                  <LinkIcon className="h-3.5 w-3.5" />
+                  <span>Google Drive Link</span>
+                </button>
+              </div>
+
+              {paperSourceType === 'pdf' ? (
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-cyan-400/40 bg-cyan-500/15 px-3.5 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25">
+                      <Upload className="h-3.5 w-3.5" />
+                      <span>Upload Paper PDF to Cloud Storage</span>
+                      <input
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        onChange={handlePaperFileSelect}
+                        className="hidden"
+                      />
+                    </label>
+                    {paperFileSize > 0 && (
+                      <span className="text-[11px] font-mono text-emerald-300">
+                        {paperFileName} ({formatBytes(paperFileSize)})
+                      </span>
+                    )}
+                  </div>
+
+                  {paperUploadProgress !== null && (
+                    <div className="space-y-1">
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full bg-cyan-400 transition-all"
+                          style={{ width: `${paperUploadProgress}%` }}
+                        />
+                      </div>
+                      <p className="text-[11px] font-mono text-cyan-300">
+                        Uploading PDF... {paperUploadProgress}%
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-400">
+                      Direct PDF URL (populated automatically on upload)
+                    </label>
+                    <input
+                      type="text"
+                      value={paperPdfUrl}
+                      onChange={(e) => setPaperPdfUrl(e.target.value)}
+                      placeholder="https://firebasestorage.googleapis.com/... or /api/curriculum-pdf/..."
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-cyan-400"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Google Drive Sharing Link (Anyone with the link can view)
+                  </label>
+                  <input
+                    type="url"
+                    required
+                    value={paperDriveUrl}
+                    onChange={(e) => setPaperDriveUrl(e.target.value)}
+                    placeholder="https://drive.google.com/file/d/.../view?usp=sharing"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-cyan-400"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                id="paperPub"
+                checked={paperPublished}
+                onChange={(e) => setPaperPublished(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-950 text-cyan-500"
+              />
+              <label htmlFor="paperPub" className="text-xs text-slate-300">
+                Publish immediately on Home &amp; Past Papers pages
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={savingModal}
+                onClick={() => setShowPaperModal(false)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingModal || paperUploadProgress !== null}
+                className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-5 py-2 text-xs font-semibold text-white hover:bg-cyan-400 disabled:opacity-50"
+              >
+                {savingModal && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>Save Past Paper</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Announcement Create / Edit Modal */}
+      {showAnnModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <form
+            onSubmit={handleSaveAnnouncement}
+            className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4 max-h-[92dvh] overflow-y-auto"
+          >
+            <h3 className="text-lg font-bold text-white">
+              {editingAnn ? 'Edit Announcement' : 'Publish Platform Announcement'}
+            </h3>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">Announcement Headline</label>
+              <input
+                type="text"
+                required
+                value={annTitle}
+                onChange={(e) => setAnnTitle(e.target.value)}
+                placeholder="e.g. 2026 Model Examination Schedule Released"
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400 focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Category</label>
+                <select
+                  value={annCategory}
+                  onChange={(e) => setAnnCategory(e.target.value as AnnouncementCategory)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-cyan-400"
+                >
+                  {ANNOUNCEMENT_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300">Priority Level</label>
+                <select
+                  value={annPriority}
+                  onChange={(e) => setAnnPriority(e.target.value as AnnouncementPriority)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-cyan-400"
+                >
+                  <option value="urgent">Urgent</option>
+                  <option value="high">High</option>
+                  <option value="normal">Normal</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-300">Message Details</label>
+              <textarea
+                rows={4}
+                required
+                value={annBody}
+                onChange={(e) => setAnnBody(e.target.value)}
+                placeholder="Write the full announcement details for students..."
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white focus:border-cyan-400"
+              />
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-semibold text-slate-300">
+                  Optional Banner Image (Cloud Upload or Google Drive Link)
+                </label>
+                <div className="flex items-center gap-2">
+                  {annImageUrl.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setAnnImageUrl('')}
+                      className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:border-slate-500 hover:text-white whitespace-nowrap shrink-0"
+                    >
+                      <X className="h-3 w-3" />
+                      <span>Clear</span>
+                    </button>
+                  )}
+                  <label className="inline-flex min-h-[36px] cursor-pointer items-center gap-1.5 rounded-lg border border-sky-400/35 bg-sky-500/15 px-3 py-1.5 text-[11px] font-semibold text-cyan-200 hover:bg-sky-500/25 whitespace-nowrap shrink-0">
+                    {annImageUploading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="h-3.5 w-3.5" />
+                    )}
+                    <span>{annImageUploading ? 'Uploading...' : 'Upload Image'}</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      disabled={annImageUploading}
+                      onChange={handleAnnImageUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {annImageUploadProgress !== null && (
+                <div className="space-y-1">
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full bg-cyan-400 transition-all duration-150"
+                      style={{ width: `${annImageUploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-[11px] font-mono tabular-nums text-cyan-300">
+                    Uploading banner image... {annImageUploadProgress}%
+                  </p>
+                </div>
+              )}
+
+              <input
+                type="text"
+                value={annImageUrl}
+                onChange={(e) => setAnnImageUrl(e.target.value)}
+                onBlur={() => setAnnImageUrl((prev) => normalizeAnnouncementImageUrl(prev))}
+                placeholder="https://drive.google.com/file/d/.../view?usp=sharing or https://..."
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-cyan-400 focus:outline-none"
+              />
+              <p className="text-[11px] text-slate-400">
+                Supports PNG, JPG, or WebP up to 5 MB via Firebase Cloud Storage, or paste any shared Google Drive image link.
+              </p>
+
+              {annImageUrl.trim() && (
+                <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+                  <ResilientImage
+                    src={normalizeAnnouncementImageUrl(annImageUrl)}
+                    alt={annTitle || 'Announcement banner preview'}
+                    fallbackLabel="Banner preview unavailable — ensure link sharing is set to Anyone with the link"
+                    className="max-h-44 w-full object-cover"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={annIsImportant}
+                  onChange={(e) => setAnnIsImportant(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-950 text-cyan-500"
+                />
+                <span>Display as Important Home Popup Notice for unread students</span>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={annPublished}
+                  onChange={(e) => setAnnPublished(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-950 text-cyan-500"
+                />
+                <span>Publish immediately</span>
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={savingModal}
+                onClick={() => setShowAnnModal(false)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingModal || annImageUploading}
+                className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-5 py-2 text-xs font-semibold text-white hover:bg-cyan-400 disabled:opacity-50"
+              >
+                {savingModal && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>Save Announcement</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Universal Cross-Browser Delete Confirmation Dialog */}
       <ConfirmDialog
-        open={Boolean(confirmState)}
-        title={confirmState?.title || ''}
-        description={confirmState?.description || ''}
-        confirmLabel={confirmState?.confirmLabel}
-        busy={confirmBusy}
-        onCancel={() => setConfirmState(null)}
-        onConfirm={async () => {
-          if (!confirmState) return;
-          setConfirmBusy(true);
-          try {
-            await confirmState.action();
-            setConfirmState(null);
-          } catch (err) {
-            pushToast('error', 'Action failed', err instanceof Error ? err.message : '');
-          } finally {
-            setConfirmBusy(false);
-          }
-        }}
+        open={Boolean(deleteTarget)}
+        title={
+          deleteTarget?.kind === 'note'
+            ? 'Delete Educational Note'
+            : deleteTarget?.kind === 'paper'
+            ? 'Delete Past Paper'
+            : 'Delete Announcement'
+        }
+        description={
+          deleteTarget
+            ? `Are you sure you want to permanently delete "${deleteTarget.item.title}"? This action cannot be undone.`
+            : ''
+        }
+        busy={deleteBusy}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={handleConfirmDelete}
       />
     </div>
   );

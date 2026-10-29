@@ -1672,3 +1672,5 @@ export function AdminRankBoardPanel() {
     </div>
   );
 }
+
+export const AdminExamManager = AdminOnlineExamManagementPanel;

@@ -10,7 +10,7 @@ import type {
 import { computeManualBoardRankings, formatShortDate } from '../utils/platformLogic';
 
 interface RankBoardViewProps {
-  entries: RankBoardEntry[];
+  entries?: RankBoardEntry[];
   exams?: OnlineExam[];
   customBoards?: CustomRankBoard[];
   customEntries?: CustomRankEntry[];
@@ -42,7 +42,7 @@ interface UnifiedRankRow {
 
 export function RankBoardView({
   entries,
-  exams = [],
+  exams,
   customBoards,
   customEntries,
   loading = false,
@@ -52,6 +52,8 @@ export function RankBoardView({
   emptyDescription = 'Once an administrator publishes a Rank Board or releases official online examination standings, ranked student results appear here automatically.',
 }: RankBoardViewProps) {
   const platform = usePlatform();
+  const effectiveEntries = entries ?? platform.publishedRankEntries;
+  const effectiveExams = exams ?? platform.publishedExams;
   const effectiveCustomBoards = customBoards ?? platform.publishedRankBoards;
   const effectiveCustomEntries = customEntries ?? platform.publishedCustomRankEntries;
 
@@ -115,7 +117,7 @@ export function RankBoardView({
     });
 
     // 2. Published Native Online Examination Rank Entries
-    entries.forEach((r) => {
+    effectiveEntries.forEach((r) => {
       if (!r.published) return;
       rows.push({
         id: `exam_${r.id}`,
@@ -138,7 +140,7 @@ export function RankBoardView({
     });
 
     return rows;
-  }, [activePublishedBoardsMap, effectiveCustomBoards.length, effectiveCustomEntries, entries]);
+  }, [activePublishedBoardsMap, effectiveCustomBoards.length, effectiveCustomEntries, effectiveEntries]);
 
   const boardFilterOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -147,7 +149,7 @@ export function RankBoardView({
         map.set(`board:${b.id}`, `${b.title} (${b.category})`);
       }
     });
-    exams.forEach((e) => {
+    effectiveExams.forEach((e) => {
       if (e.examMode === 'native' && e.rankBoardPublished) {
         map.set(e.id, `${e.title} (Online Exam)`);
       }

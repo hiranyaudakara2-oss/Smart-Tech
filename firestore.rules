@@ -850,7 +850,7 @@ service cloud.firestore {
 
     // 12. /userActivities/{activityId} — Per-User Resource View, Download & Exam History
     match /userActivities/{activityId} {
-      allow get: if isValidId(activityId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
+      allow get: if isValidId(activityId) && isVerifiedUser() && (resource == null || existing().userId == request.auth.uid);
       allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
 
       allow create: if isVerifiedUser() &&
@@ -865,18 +865,29 @@ service cloud.firestore {
 
     // 13. /announcementReads/{readId} — Per-User Unread Badge Tracking
     match /announcementReads/{readId} {
-      allow get: if isValidId(readId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
+      allow get: if isValidId(readId) && isVerifiedUser() && (resource == null || existing().userId == request.auth.uid);
       allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
 
       allow create: if isVerifiedUser() &&
         isValidId(readId) &&
         isValidAnnouncementRead(incoming()) &&
-        incoming().readAt is timestamp &&
+        incoming().readAt == request.time &&
         incoming().userId == request.auth.uid &&
         exists(/databases/$(database)/documents/users/$(incoming().userId)) &&
         exists(/databases/$(database)/documents/announcements/$(incoming().announcementId));
 
-      allow update: if false;
+      allow update: if isVerifiedUser() &&
+        isValidId(readId) &&
+        isValidAnnouncementRead(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().announcementId == existing().announcementId &&
+        incoming().userId == request.auth.uid &&
+        incoming().readAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['readAt']) ||
+          isAdmin()
+        );
+
       allow delete: if isValidId(readId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
     }
 

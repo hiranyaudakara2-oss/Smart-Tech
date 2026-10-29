@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  calculateStudentLearningProgress,
   computeCompetitionRankings,
   computeManualBoardRankings,
   evaluateCodeRateLimit,
   evaluateExamStatus,
+  extractGoogleDriveFileId,
   filterAndSortNotes,
   filterAndSortPapers,
   formatCountdown,
@@ -16,17 +18,27 @@ import {
   isValidDocumentId,
   isValidGoogleFormsUrl,
   isValidSixDigitCode,
+  normalizeAnnouncementImageUrl,
   paginateItems,
   parseColomboLocalInputToUtcMs,
   parseTagsInput,
+  sanitizeImageStorageFileName,
   sanitizeQuestionsForPublic,
   sanitizeStorageFileName,
   validateGoogleDriveUrl,
   validateNativeExamInput,
   validateOnlineExamInput,
+  verifyImageMagicBytes,
   verifyPdfMagicBytes,
 } from './platformLogic';
-import type { ExamPaper, ExamQuestionFull, NoteResource } from '../types/platform';
+import type {
+  ExamAttempt,
+  ExamPaper,
+  ExamQuestionFull,
+  NoteResource,
+  OnlineExam,
+  UserActivity,
+} from '../types/platform';
 
 test('PDF magic byte verification accepts genuine %PDF- headers and rejects spoofed files', () => {
   const genuinePdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
@@ -551,3 +563,366 @@ test('Manual & Automatic Rank Board engine handles descending marks, 1-1-3 ties,
     ]
   );
 });
+
+test('Notice banner image magic bytes and filename sanitizer validate PNG, JPEG, and WebP cleanly', () => {
+  const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  const jpgHeader = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+  const webpHeader = new Uint8Array([
+    0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+  ]);
+  const htmlSpoof = new TextEncoder().encode('<!DOCTYPE html>');
+
+  assert.deepEqual(verifyImageMagicBytes(pngHeader), {
+    valid: true,
+    ext: 'png',
+    mime: 'image/png',
+  });
+  assert.deepEqual(verifyImageMagicBytes(jpgHeader), {
+    valid: true,
+    ext: 'jpg',
+    mime: 'image/jpeg',
+  });
+  assert.deepEqual(verifyImageMagicBytes(webpHeader), {
+    valid: true,
+    ext: 'webp',
+    mime: 'image/webp',
+  });
+  assert.equal(verifyImageMagicBytes(htmlSpoof).valid, false);
+
+  assert.equal(
+    sanitizeImageStorageFileName('2026 Exam Schedule Banner!!.jpeg', 'jpg'),
+    '2026_Exam_Schedule_Banner.jpg'
+  );
+  assert.equal(sanitizeImageStorageFileName('   .png', 'png'), 'notice_banner.png');
+});
+
+test('Announcement banner URL normalizer converts Google Drive file links into embeddable HTTPS thumbnails', () => {
+  const driveShare =
+    'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz123456/view?usp=sharing';
+  const driveOpen = 'https://drive.google.com/open?id=1AbCdEfGhIjKlMnOpQrStUvWxYz123456';
+
+  assert.equal(extractGoogleDriveFileId(driveShare), '1AbCdEfGhIjKlMnOpQrStUvWxYz123456');
+  assert.equal(extractGoogleDriveFileId(driveOpen), '1AbCdEfGhIjKlMnOpQrStUvWxYz123456');
+
+  assert.equal(
+    normalizeAnnouncementImageUrl(driveShare),
+    'https://drive.google.com/thumbnail?id=1AbCdEfGhIjKlMnOpQrStUvWxYz123456&sz=w1600'
+  );
+  assert.equal(
+    normalizeAnnouncementImageUrl('  https://firebasestorage.googleapis.com/v0/b/app/o/banner.png  '),
+    'https://firebasestorage.googleapis.com/v0/b/app/o/banner.png'
+  );
+  assert.equal(normalizeAnnouncementImageUrl('   '), '');
+});
+
+test('Student learning progress indicator calculates notes, exams, overall percentage, deduplication, and filters', () => {
+  // 1. Empty curriculum state returns 0% with zero NaN
+  const emptyProgress = calculateStudentLearningProgress({
+    publishedNotes: [],
+    publishedExams: [],
+    examAttempts: [],
+    userActivities: [],
+  });
+  assert.equal(emptyProgress.notesCompleted, 0);
+  assert.equal(emptyProgress.notesTotal, 0);
+  assert.equal(emptyProgress.notesPercentage, 0);
+  assert.equal(emptyProgress.examsCompleted, 0);
+  assert.equal(emptyProgress.examsTotal, 0);
+  assert.equal(emptyProgress.examsPercentage, 0);
+  assert.equal(emptyProgress.overallCompleted, 0);
+  assert.equal(emptyProgress.overallTotal, 0);
+  assert.equal(emptyProgress.overallPercentage, 0);
+
+  const sampleNotes: NoteResource[] = [
+    {
+      id: 'n1',
+      title: 'GPIO Interfacing',
+      subject: 'Engineering Technology',
+      grade: 'Grade 13 (G.C.E. A/L)',
+      description: 'GPIO module',
+      tags: ['GPIO'],
+      pdfUrl: '/api/n1.pdf',
+      storagePath: '',
+      fileName: 'n1.pdf',
+      fileSize: 1024,
+      thumbnailUrl: '',
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+    },
+    {
+      id: 'n2',
+      title: 'CIDR Subnetting',
+      subject: 'ICT',
+      grade: 'Grade 13 (G.C.E. A/L)',
+      description: 'Subnetting module',
+      tags: ['CIDR'],
+      pdfUrl: '/api/n2.pdf',
+      storagePath: '',
+      fileName: 'n2.pdf',
+      fileSize: 1024,
+      thumbnailUrl: '',
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 2000,
+      updatedAtMs: 2000,
+    },
+    {
+      id: 'n3',
+      title: 'Hydroponics Sensors',
+      subject: 'Biosystems Technology',
+      grade: 'Grade 12 (G.C.E. A/L)',
+      description: 'Sensors module',
+      tags: ['Sensors'],
+      pdfUrl: '/api/n3.pdf',
+      storagePath: '',
+      fileName: 'n3.pdf',
+      fileSize: 1024,
+      thumbnailUrl: '',
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 3000,
+      updatedAtMs: 3000,
+    },
+  ];
+
+  const sampleExams: OnlineExam[] = [
+    {
+      id: 'ex_native_done',
+      title: 'ICT Timed Diagnostic',
+      subject: 'ICT',
+      grade: 'Grade 13 (G.C.E. A/L)',
+      description: 'Timed exam',
+      instructions: 'Answer all',
+      timezone: 'Asia/Colombo',
+      examMode: 'native',
+      opensAtMs: 1000,
+      closesAtMs: 90000,
+      durationMinutes: 25,
+      totalMarks: 100,
+      passingMarks: 50,
+      questionCount: 5,
+      maxAttempts: 2,
+      accessCodeProtected: true,
+      showExplanations: true,
+      resultsPublished: true,
+      rankBoardPublished: true,
+      anonymizeRankBoard: false,
+      questions: [],
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+    },
+    {
+      id: 'ex_native_inprog',
+      title: 'ET Mid-Term Assessment',
+      subject: 'Engineering Technology',
+      grade: 'Grade 13 (G.C.E. A/L)',
+      description: 'Timed exam',
+      instructions: 'Answer all',
+      timezone: 'Asia/Colombo',
+      examMode: 'native',
+      opensAtMs: 1000,
+      closesAtMs: 90000,
+      durationMinutes: 30,
+      totalMarks: 100,
+      passingMarks: 50,
+      questionCount: 5,
+      maxAttempts: 1,
+      accessCodeProtected: true,
+      showExplanations: true,
+      resultsPublished: false,
+      rankBoardPublished: false,
+      anonymizeRankBoard: false,
+      questions: [],
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 2000,
+      updatedAtMs: 2000,
+    },
+    {
+      id: 'ex_form_done',
+      title: 'BST External Practical Quiz',
+      subject: 'Biosystems Technology',
+      grade: 'Grade 12 (G.C.E. A/L)',
+      description: 'Form exam',
+      instructions: 'Complete form',
+      timezone: 'Asia/Colombo',
+      examMode: 'google_form',
+      opensAtMs: 1000,
+      closesAtMs: 90000,
+      durationMinutes: 20,
+      totalMarks: 50,
+      passingMarks: 25,
+      questionCount: 10,
+      maxAttempts: 1,
+      accessCodeProtected: false,
+      showExplanations: false,
+      resultsPublished: false,
+      rankBoardPublished: false,
+      anonymizeRankBoard: false,
+      questions: [],
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 3000,
+      updatedAtMs: 3000,
+    },
+  ];
+
+  const activities: UserActivity[] = [
+    // Duplicate views + downloads of n1 should count once
+    {
+      id: 'act1',
+      userId: 'u1',
+      resourceId: 'n1',
+      resourceType: 'note',
+      resourceTitle: 'GPIO Interfacing',
+      subject: 'Engineering Technology',
+      action: 'viewed',
+      createdAtMs: 4000,
+    },
+    {
+      id: 'act2',
+      userId: 'u1',
+      resourceId: 'n1',
+      resourceType: 'note',
+      resourceTitle: 'GPIO Interfacing',
+      subject: 'Engineering Technology',
+      action: 'downloaded',
+      createdAtMs: 5000,
+    },
+    // Deleted/unpublished note activity must be ignored
+    {
+      id: 'act_orphan',
+      userId: 'u1',
+      resourceId: 'deleted_note_99',
+      resourceType: 'note',
+      resourceTitle: 'Old Note',
+      subject: 'ICT',
+      action: 'downloaded',
+      createdAtMs: 6000,
+    },
+    // Google form exam opened
+    {
+      id: 'act_form',
+      userId: 'u1',
+      resourceId: 'ex_form_done',
+      resourceType: 'exam',
+      resourceTitle: 'BST External Practical Quiz',
+      subject: 'Biosystems Technology',
+      action: 'opened_exam',
+      createdAtMs: 7000,
+    },
+  ];
+
+  const attempts: ExamAttempt[] = [
+    {
+      id: 'att1',
+      examId: 'ex_native_done',
+      examTitle: 'ICT Timed Diagnostic',
+      subject: 'ICT',
+      userId: 'u1',
+      studentName: 'Nimal',
+      studentEmail: 'nimal@example.com',
+      attemptNumber: 1,
+      status: 'graded',
+      startedAtMs: 2000,
+      expiresAtMs: 3500,
+      submittedAtMs: 3200,
+      updatedAtMs: 3200,
+      answers: {},
+      marksObtained: 80,
+      totalMarks: 100,
+      percentage: 80,
+      passed: true,
+      resultsPublished: true,
+      serverReceipt: 'rcpt_1234567890abcdef',
+      reviewBreakdown: [],
+    },
+    {
+      id: 'att2_dup',
+      examId: 'ex_native_done',
+      examTitle: 'ICT Timed Diagnostic',
+      subject: 'ICT',
+      userId: 'u1',
+      studentName: 'Nimal',
+      studentEmail: 'nimal@example.com',
+      attemptNumber: 2,
+      status: 'graded',
+      startedAtMs: 4000,
+      expiresAtMs: 5500,
+      submittedAtMs: 5200,
+      updatedAtMs: 5200,
+      answers: {},
+      marksObtained: 95,
+      totalMarks: 100,
+      percentage: 95,
+      passed: true,
+      resultsPublished: true,
+      serverReceipt: 'rcpt_abcdef1234567890',
+      reviewBreakdown: [],
+    },
+    {
+      id: 'att3_inprog',
+      examId: 'ex_native_inprog',
+      examTitle: 'ET Mid-Term Assessment',
+      subject: 'Engineering Technology',
+      userId: 'u1',
+      studentName: 'Nimal',
+      studentEmail: 'nimal@example.com',
+      attemptNumber: 1,
+      status: 'in_progress',
+      startedAtMs: 8000,
+      expiresAtMs: 99000,
+      submittedAtMs: 0,
+      updatedAtMs: 8000,
+      answers: {},
+      marksObtained: 0,
+      totalMarks: 100,
+      percentage: 0,
+      passed: false,
+      resultsPublished: false,
+      serverReceipt: '',
+      reviewBreakdown: [],
+    },
+  ];
+
+  // 2. Full curriculum calculation: 1/3 notes (33%), 2/3 exams (67%), 1 exam in_progress, 3/6 overall (50%)
+  const progress = calculateStudentLearningProgress({
+    publishedNotes: sampleNotes,
+    publishedExams: sampleExams,
+    examAttempts: attempts,
+    userActivities: activities,
+  });
+
+  assert.equal(progress.notesCompleted, 1);
+  assert.equal(progress.notesTotal, 3);
+  assert.equal(progress.notesPercentage, 33);
+  assert.equal(progress.examsCompleted, 2);
+  assert.equal(progress.examsInProgress, 1);
+  assert.equal(progress.examsTotal, 3);
+  assert.equal(progress.examsPercentage, 67);
+  assert.equal(progress.overallCompleted, 3);
+  assert.equal(progress.overallTotal, 6);
+  assert.equal(progress.overallPercentage, 50);
+
+  // 3. Subject filter: ICT has 0/1 notes (0%) and 1/1 exams (100%) -> 1/2 overall (50%)
+  const ictProgress = calculateStudentLearningProgress({
+    publishedNotes: sampleNotes,
+    publishedExams: sampleExams,
+    examAttempts: attempts,
+    userActivities: activities,
+    subjectFilter: 'ICT',
+  });
+  assert.equal(ictProgress.notesCompleted, 0);
+  assert.equal(ictProgress.notesTotal, 1);
+  assert.equal(ictProgress.examsCompleted, 1);
+  assert.equal(ictProgress.examsTotal, 1);
+  assert.equal(ictProgress.overallCompleted, 1);
+  assert.equal(ictProgress.overallTotal, 2);
+  assert.equal(ictProgress.overallPercentage, 50);
+});
+
+

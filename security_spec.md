@@ -26,6 +26,9 @@
    - Once an attempt transitions from `'in_progress'` to `'graded'` or `'pending_review'`, student updates are permanently locked (`existing().status == 'in_progress'` fails); only verified administrators (`isAdmin()`) may adjust marks or publish results.
 8. **Cost-Optimized List Enforcement**:
    - Zero `get()` or `exists()` lookups appear inside any `allow list:` expression across all 16 collections.
+9. **Per-User Announcement Read Receipts (`/announcementReads`)**:
+   - Existing read receipts are isolated strictly to `existing().userId == request.auth.uid` (non-existent document probes return empty snapshot without leaking cross-user data).
+   - Creation and idempotent re-acknowledgment updates require `isVerifiedUser()`, `isValidId(readId)`, `isValidAnnouncementRead(incoming())`, `incoming().userId == request.auth.uid`, strict server timestamp `incoming().readAt == request.time`, and existence of both `/users/$(incoming().userId)` and `/announcements/$(incoming().announcementId)` on creation; updates strictly lock `userId` and `announcementId` as immutable and restrict `affectedKeys().hasOnly(['readAt'])`.
 
 ---
 

@@ -13,12 +13,13 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, ref, uploadBytesResumable } from 'firebase/storage';
-import type { User } from 'firebase/auth';
+import { EmailAuthProvider, linkWithCredential, updatePassword, type User } from 'firebase/auth';
 import {
   auth,
   BOOTSTRAPPED_ADMIN_EMAIL,
   db,
   handleFirestoreError,
+  isFirestoreOfflineOrTransientError,
   OperationType,
   storage,
 } from '../lib/firebase';
@@ -45,9 +46,14 @@ import {
   computeCompetitionRankings,
   computeManualBoardRankings,
   generateRandomSixDigitCode,
+  MAX_NOTICE_IMAGE_BYTES,
   MAX_PDF_FILE_BYTES,
+  normalizeAnnouncementImageUrl,
+  safeParseJsonResponse,
+  sanitizeImageStorageFileName,
   sanitizeStorageFileName,
   validateGoogleDriveUrl,
+  verifyImageMagicBytes,
   verifyPdfMagicBytes,
 } from '../utils/platformLogic';
 import { getDefaultSubjectThumbnail, VISUAL_ASSETS } from '../assets/visualCatalog';
@@ -68,32 +74,131 @@ function makeDocId(prefix: string): string {
   return `${prefix}_${Date.now()}_${rand}`;
 }
 
-async function getBearerHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
+const ADMIN_SESSION_STORAGE_KEY = 'smart_tech_admin_session';
+
+export function getSavedAdminSessionToken(): string {
+  try {
+    const fromSession = window.sessionStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+    if (fromSession) return fromSession;
+  } catch {
+    // Ignore storage restriction
+  }
+  try {
+    const fromLocal = window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+    if (fromLocal) return fromLocal;
+  } catch {
+    // Ignore storage restriction
+  }
+  return '';
+}
+
+export function saveAdminSessionToken(token: string): void {
+  try {
+    window.sessionStorage.setItem(ADMIN_SESSION_STORAGE_KEY, token);
+  } catch {
+    // Ignore storage restriction
+  }
+  try {
+    window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, token);
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
+export function clearSavedAdminSessionToken(): void {
+  try {
+    window.sessionStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage restriction
+  }
+  try {
+    window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
+export function requireAdminFirebaseUser(): User {
   const user = auth.currentUser;
   if (!user) {
-    throw new Error('Authentication required. Please sign in and try again.');
+    throw new Error(
+      'Cloud write access requires Firebase authentication on this device. Tap "Authorize Cloud Writes with Google" in the Admin banner (or sync Email/Password in Security tab) and retry.'
+    );
   }
-  const idToken = await user.getIdToken();
-  const sessionToken = window.sessionStorage.getItem('smart_tech_admin_session') || '';
-  return {
-    Authorization: `Bearer ${idToken}`,
-    ...(sessionToken ? { 'X-Admin-Session': sessionToken } : {}),
-    ...extra,
-  };
+  return user;
 }
+
+async function getBearerHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
+  const user = auth.currentUser;
+  const sessionToken = getSavedAdminSessionToken();
+  if (user) {
+    const idToken = await user.getIdToken();
+    return {
+      Authorization: `Bearer ${idToken}`,
+      ...(sessionToken ? { 'X-Admin-Session': sessionToken } : {}),
+      ...extra,
+    };
+  }
+  if (sessionToken) {
+    return {
+      'X-Admin-Session': sessionToken,
+      ...extra,
+    };
+  }
+  throw new Error('Authentication required. Please sign in and try again.');
+}
+
+let activeProfileSyncUid: string | null = null;
+let activeProfileSyncPromise: Promise<{
+  profile: UserProfile;
+  isVerifiedAdmin: boolean;
+}> | null = null;
+const syncedProfileUids = new Set<string>();
 
 export async function syncAuthenticatedUserProfile(user: User): Promise<{
   profile: UserProfile;
   isVerifiedAdmin: boolean;
 }> {
-  const userRef = doc(db, 'users', user.uid);
-  const adminRef = doc(db, 'admins', user.uid);
-  const statsRef = doc(db, 'stats', 'platform');
+  if (activeProfileSyncPromise && activeProfileSyncUid === user.uid) {
+    return activeProfileSyncPromise;
+  }
+
+  const runSync = async (): Promise<{
+    profile: UserProfile;
+    isVerifiedAdmin: boolean;
+  }> => {
+    const userRef = doc(db, 'users', user.uid);
+    const adminRef = doc(db, 'admins', user.uid);
+    const statsRef = doc(db, 'stats', 'platform');
+
+  const isBootstrapped =
+    Boolean(user.emailVerified) &&
+    (user.email || '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+  const safeDisplayName = (user.displayName || user.email?.split('@')[0] || 'Student').slice(0, 100);
+  const safeEmail = (user.email || '').slice(0, 254);
+  const safePhoto = (user.photoURL || '').slice(0, 1024);
 
   let existingSnap;
   try {
     existingSnap = await getDoc(userRef);
   } catch (error) {
+    if (isFirestoreOfflineOrTransientError(error)) {
+      const now = Date.now();
+      return {
+        profile: {
+          uid: user.uid,
+          displayName: safeDisplayName,
+          email: safeEmail,
+          photoURL: safePhoto,
+          role: isBootstrapped ? 'admin' : 'student',
+          grade: 'G.C.E. A/L Technology',
+          createdAtMs: now,
+          lastLoginAtMs: now,
+          updatedAtMs: now,
+        },
+        isVerifiedAdmin: isBootstrapped,
+      };
+    }
     handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
   }
 
@@ -105,20 +210,30 @@ export async function syncAuthenticatedUserProfile(user: User): Promise<{
     isInAdminsCollection = false;
   }
 
-  const isBootstrapped =
-    Boolean(user.emailVerified) &&
-    (user.email || '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
   const isVerifiedAdmin = isBootstrapped || (Boolean(user.emailVerified) && isInAdminsCollection);
-
-  const safeDisplayName = (user.displayName || user.email?.split('@')[0] || 'Student').slice(0, 100);
-  const safeEmail = (user.email || '').slice(0, 254);
-  const safePhoto = (user.photoURL || '').slice(0, 1024);
 
   if (!existingSnap.exists()) {
     let statsSnap;
     try {
       statsSnap = await getDoc(statsRef);
     } catch (error) {
+      if (isFirestoreOfflineOrTransientError(error)) {
+        const now = Date.now();
+        return {
+          profile: {
+            uid: user.uid,
+            displayName: safeDisplayName,
+            email: safeEmail,
+            photoURL: safePhoto,
+            role: isVerifiedAdmin ? 'admin' : 'student',
+            grade: 'G.C.E. A/L Technology',
+            createdAtMs: now,
+            lastLoginAtMs: now,
+            updatedAtMs: now,
+          },
+          isVerifiedAdmin,
+        };
+      }
       handleFirestoreError(error, OperationType.GET, 'stats/platform');
     }
 
@@ -156,8 +271,11 @@ export async function syncAuthenticatedUserProfile(user: User): Promise<{
 
     try {
       await batch.commit();
+      syncedProfileUids.add(user.uid);
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+      if (!isFirestoreOfflineOrTransientError(error)) {
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+      }
     }
 
     const now = Date.now();
@@ -178,13 +296,16 @@ export async function syncAuthenticatedUserProfile(user: User): Promise<{
   }
 
   const data = existingSnap.data();
+  syncedProfileUids.add(user.uid);
   try {
     await updateDoc(userRef, {
       lastLoginAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    if (!isFirestoreOfflineOrTransientError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
   }
 
   return {
@@ -201,6 +322,33 @@ export async function syncAuthenticatedUserProfile(user: User): Promise<{
     },
     isVerifiedAdmin,
   };
+  };
+
+  activeProfileSyncUid = user.uid;
+  const promise = runSync().finally(() => {
+    if (activeProfileSyncPromise === promise) {
+      activeProfileSyncPromise = null;
+      activeProfileSyncUid = null;
+    }
+  });
+  activeProfileSyncPromise = promise;
+  return promise;
+}
+
+async function ensureUserProfileDocumentSynced(userId: string): Promise<void> {
+  if (syncedProfileUids.has(userId)) {
+    return;
+  }
+  if (activeProfileSyncPromise && activeProfileSyncUid === userId) {
+    await activeProfileSyncPromise.catch(() => undefined);
+    if (syncedProfileUids.has(userId)) {
+      return;
+    }
+  }
+  const currentUser = auth.currentUser;
+  if (currentUser && currentUser.uid === userId && currentUser.emailVerified) {
+    await syncAuthenticatedUserProfile(currentUser).catch(() => undefined);
+  }
 }
 
 export async function updatePermittedUserProfile(
@@ -232,6 +380,11 @@ export async function recordUserResourceActivity(params: {
   subject: string;
   action: 'viewed' | 'downloaded' | 'opened_exam' | 'submitted_exam';
 }): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.uid !== params.userId || !currentUser.emailVerified) {
+    return;
+  }
+  await ensureUserProfileDocumentSynced(params.userId);
   const activityId = makeDocId('act');
   try {
     await setDoc(doc(db, 'userActivities', activityId), {
@@ -244,7 +397,35 @@ export async function recordUserResourceActivity(params: {
       createdAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `userActivities/${activityId}`);
+    if (!isFirestoreOfflineOrTransientError(error)) {
+      handleFirestoreError(error, OperationType.CREATE, `userActivities/${activityId}`);
+    }
+  }
+}
+
+export async function clearUserNoteCompletion(params: {
+  userId: string;
+  noteId: string;
+  existingActivities: Array<{ id: string; userId: string; resourceId: string; resourceType: string }>;
+}): Promise<void> {
+  const matching = params.existingActivities.filter(
+    (act) =>
+      act.userId === params.userId &&
+      act.resourceType === 'note' &&
+      act.resourceId === params.noteId
+  );
+  if (matching.length === 0) return;
+
+  const batch = writeBatch(db);
+  for (const act of matching) {
+    batch.delete(doc(db, 'userActivities', act.id));
+  }
+  try {
+    await batch.commit();
+  } catch (error) {
+    if (!isFirestoreOfflineOrTransientError(error)) {
+      handleFirestoreError(error, OperationType.DELETE, `userActivities/${params.noteId}`);
+    }
   }
 }
 
@@ -252,19 +433,27 @@ export async function markAnnouncementAsRead(
   userId: string,
   announcementId: string
 ): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (
+    !currentUser ||
+    currentUser.uid !== userId ||
+    !currentUser.emailVerified ||
+    !announcementId
+  ) {
+    return;
+  }
+  await ensureUserProfileDocumentSynced(userId);
   const readId = `${userId}_${announcementId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
   try {
-    const refDoc = doc(db, 'announcementReads', readId);
-    const snap = await getDoc(refDoc);
-    if (!snap.exists()) {
-      await setDoc(refDoc, {
-        userId,
-        announcementId,
-        readAt: serverTimestamp(),
-      });
-    }
+    await setDoc(doc(db, 'announcementReads', readId), {
+      userId,
+      announcementId,
+      readAt: serverTimestamp(),
+    });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `announcementReads/${readId}`);
+    if (!isFirestoreOfflineOrTransientError(error)) {
+      handleFirestoreError(error, OperationType.WRITE, `announcementReads/${readId}`);
+    }
   }
 }
 
@@ -392,7 +581,7 @@ export async function uploadValidatedPdfFile(
             task.cancel();
             reject(new Error('Storage bucket stalled or unprovisioned'));
           }
-        }, 4500);
+        }, 15000);
 
         task.on(
           'state_changed',
@@ -479,43 +668,109 @@ export async function uploadNoticeImageFile(
   onProgress?: (percent: number) => void
 ): Promise<string> {
   if (!file || file.size === 0) {
-    throw new Error('Select a valid image file.');
+    throw new Error('Please select a valid, non-empty image file.');
   }
-  if (file.size > 5 * 1024 * 1024) {
-    throw new Error('Notice image must not exceed 5 MB.');
+  if (file.size > MAX_NOTICE_IMAGE_BYTES) {
+    throw new Error('Notice banner image must not exceed 5 MB.');
   }
-  const allowedMimes = ['image/png', 'image/jpeg', 'image/webp'];
-  const mime = allowedMimes.includes(file.type) ? file.type : 'image/png';
-  const headers = await getBearerHeaders({ 'Content-Type': mime });
 
-  return await new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/images/upload');
-    Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+  const headerSlice = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const sig = verifyImageMagicBytes(headerSlice);
+  if (!sig.valid) {
+    throw new Error(
+      'File signature check failed: select a genuine PNG, JPEG, or WebP banner image.'
+    );
+  }
 
-    xhr.upload.onprogress = (evt) => {
-      if (evt.lengthComputable && onProgress) {
-        onProgress(Math.round((evt.loaded / evt.total) * 100));
-      }
-    };
+  const cleanFileName = `${Date.now()}_${sanitizeImageStorageFileName(file.name, sig.ext)}`;
+  const storagePath = `notices/${cleanFileName}`;
 
-    xhr.onload = () => {
+  const tryFirebaseStorage = (): Promise<string> =>
+    new Promise((resolve, reject) => {
       try {
-        const parsed = JSON.parse(xhr.responseText || '{}');
-        if (xhr.status >= 200 && xhr.status < 300 && parsed.imageUrl) {
-          onProgress?.(100);
-          resolve(String(parsed.imageUrl));
-        } else {
-          reject(new Error(parsed.error || 'Notice image upload failed.'));
-        }
-      } catch {
-        reject(new Error('Unexpected response from image upload endpoint.'));
-      }
-    };
+        const storageRef = ref(storage, storagePath);
+        const task = uploadBytesResumable(storageRef, file, {
+          contentType: sig.mime,
+        });
 
-    xhr.onerror = () => reject(new Error('Network error while uploading notice image.'));
-    xhr.send(file);
-  });
+        let progressed = false;
+        const stallTimer = window.setTimeout(() => {
+          if (!progressed) {
+            task.cancel();
+            reject(new Error('Storage bucket stalled or unprovisioned'));
+          }
+        }, 15000);
+
+        task.on(
+          'state_changed',
+          (snapshot) => {
+            if (snapshot.bytesTransferred > 0) {
+              progressed = true;
+              window.clearTimeout(stallTimer);
+            }
+            const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+            onProgress?.(Math.min(99, Math.max(5, pct)));
+          },
+          (err) => {
+            window.clearTimeout(stallTimer);
+            reject(err);
+          },
+          async () => {
+            window.clearTimeout(stallTimer);
+            try {
+              const downloadUrl = await getDownloadURL(task.snapshot.ref);
+              onProgress?.(100);
+              resolve(downloadUrl);
+            } catch (urlErr) {
+              reject(urlErr);
+            }
+          }
+        );
+      } catch (initErr) {
+        reject(initErr);
+      }
+    });
+
+  try {
+    return await tryFirebaseStorage();
+  } catch {
+    const headers = await getBearerHeaders({ 'Content-Type': sig.mime });
+
+    return await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/images/upload');
+      Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable && onProgress) {
+          onProgress(Math.round((evt.loaded / evt.total) * 100));
+        }
+      };
+
+      xhr.onload = () => {
+        try {
+          const parsed = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status >= 200 && xhr.status < 300 && parsed.imageUrl) {
+            onProgress?.(100);
+            resolve(String(parsed.imageUrl));
+          } else if (xhr.status === 501) {
+            reject(
+              new Error(
+                'Direct image file upload on Netlify requires Firebase Cloud Storage to be enabled in Firebase Console, or you can paste a shared Google Drive / HTTPS image link below.'
+              )
+            );
+          } else {
+            reject(new Error(parsed.error || 'Notice image upload failed.'));
+          }
+        } catch {
+          reject(new Error('Unexpected response from image upload endpoint.'));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Network error while uploading notice image.'));
+      xhr.send(file);
+    });
+  }
 }
 
 export async function deleteStoredPdfAsset(storagePath: string): Promise<void> {
@@ -544,14 +799,13 @@ export async function createNoteDocument(input: {
   sourceType?: ResourceSourceType;
   driveUrl?: string;
   pdfUrl: string;
-  storagePath: string;
-  fileName: string;
-  fileSize: number;
+  storagePath?: string;
+  fileName?: string;
+  fileSize?: number;
   thumbnailUrl?: string;
   published: boolean;
 }): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Administrator authentication required.');
+  const user = requireAdminFirebaseUser();
   const noteId = makeDocId('note');
   const thumb = (input.thumbnailUrl?.trim() || getDefaultSubjectThumbnail(input.subject)).slice(0, 1000);
   const cleanTags = (input.tags || []).map((t) => t.trim().slice(0, 32)).filter(Boolean).slice(0, 10);
@@ -559,9 +813,9 @@ export async function createNoteDocument(input: {
   const sourceType: ResourceSourceType = input.sourceType === 'drive' ? 'drive' : 'pdf';
   let cleanDriveUrl = '';
   let cleanPdfUrl = input.pdfUrl.trim().slice(0, 1500);
-  let cleanStoragePath = input.storagePath.slice(0, 500);
-  let cleanFileName = input.fileName.slice(0, 200) || 'document.pdf';
-  let cleanFileSize = Math.max(0, Math.floor(input.fileSize));
+  let cleanStoragePath = (input.storagePath || '').slice(0, 500);
+  let cleanFileName = (input.fileName || '').slice(0, 200) || 'document.pdf';
+  let cleanFileSize = Math.max(0, Math.floor(input.fileSize || 0));
 
   if (sourceType === 'drive') {
     const check = validateGoogleDriveUrl(input.driveUrl || input.pdfUrl);
@@ -714,27 +968,26 @@ export async function createPaperDocument(input: {
   category?: string;
   year: number;
   grade: string;
-  examType: string;
-  language: string;
+  examType?: string;
+  language?: string;
   description: string;
   sourceType?: ResourceSourceType;
   driveUrl?: string;
   pdfUrl: string;
-  storagePath: string;
-  fileName: string;
-  fileSize: number;
+  storagePath?: string;
+  fileName?: string;
+  fileSize?: number;
   published: boolean;
 }): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Administrator authentication required.');
+  const user = requireAdminFirebaseUser();
   const paperId = makeDocId('paper');
 
   const sourceType: ResourceSourceType = input.sourceType === 'drive' ? 'drive' : 'pdf';
   let cleanDriveUrl = '';
   let cleanPdfUrl = input.pdfUrl.trim().slice(0, 1500);
-  let cleanStoragePath = input.storagePath.slice(0, 500);
-  let cleanFileName = input.fileName.slice(0, 200) || 'paper.pdf';
-  let cleanFileSize = Math.max(0, Math.floor(input.fileSize));
+  let cleanStoragePath = (input.storagePath || '').slice(0, 500);
+  let cleanFileName = (input.fileName || '').slice(0, 200) || 'paper.pdf';
+  let cleanFileSize = Math.max(0, Math.floor(input.fileSize || 0));
 
   if (sourceType === 'drive') {
     const check = validateGoogleDriveUrl(input.driveUrl || input.pdfUrl);
@@ -755,8 +1008,8 @@ export async function createPaperDocument(input: {
       category: (input.category || input.examType || 'Past Paper').trim().slice(0, 60),
       year: Math.floor(input.year),
       grade: input.grade.trim().slice(0, 40),
-      examType: input.examType.trim().slice(0, 60),
-      language: input.language.trim().slice(0, 40),
+      examType: (input.examType || 'National A/L').trim().slice(0, 60),
+      language: (input.language || 'English').trim().slice(0, 40),
       description: input.description.trim().slice(0, 1500),
       fileFormat: 'PDF',
       sourceType,
@@ -898,8 +1151,7 @@ export async function createOnlineExamAtomic(input: {
   closesAtMs: number;
   published: boolean;
 }): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Administrator authentication required.');
+  const user = requireAdminFirebaseUser();
   const examId = makeDocId('exam');
 
   const batch = writeBatch(db);
@@ -1024,8 +1276,7 @@ export interface NativeExamUpsertInput {
 }
 
 export async function createNativeOnlineExamAtomic(input: NativeExamUpsertInput): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Administrator authentication required.');
+  const user = requireAdminFirebaseUser();
   const examId = makeDocId('exam');
 
   const headers = await getBearerHeaders({ 'Content-Type': 'application/json' });
@@ -1040,7 +1291,16 @@ export async function createNativeOnlineExamAtomic(input: NativeExamUpsertInput)
     }),
   });
 
-  const sealed = await sealResp.json();
+  const sealed = await safeParseJsonResponse<{
+    error?: string;
+    totalMarks?: number;
+    questionCount?: number;
+    sanitizedQuestions?: any[];
+    codeMac?: string;
+    sealedAccessCode?: string;
+    codeRevoked?: boolean;
+    sealedAnswerKey?: string;
+  }>(sealResp);
   if (!sealResp.ok) {
     throw new Error(sealed.error || 'Failed to seal examination configuration on server.');
   }
@@ -1129,7 +1389,16 @@ export async function updateNativeOnlineExamAtomic(
     }),
   });
 
-  const sealed = await sealResp.json();
+  const sealed = await safeParseJsonResponse<{
+    error?: string;
+    totalMarks?: number;
+    questionCount?: number;
+    sanitizedQuestions?: any[];
+    codeMac?: string;
+    sealedAccessCode?: string;
+    codeRevoked?: boolean;
+    sealedAnswerKey?: string;
+  }>(sealResp);
   if (!sealResp.ok) {
     throw new Error(sealed.error || 'Failed to seal updated examination configuration.');
   }
@@ -1209,7 +1478,12 @@ export async function revealNativeExamSecretConfig(examId: string): Promise<{
   const resp = await fetch(`/api/admin/exams/${encodeURIComponent(examId)}/reveal`, {
     headers,
   });
-  const data = await resp.json();
+  const data = await safeParseJsonResponse<{
+    error?: string;
+    accessCode?: string;
+    codeRevoked?: boolean;
+    questions?: ExamQuestionFull[];
+  }>(resp);
   if (!resp.ok) {
     throw new Error(data.error || 'Unable to retrieve sealed examination configuration.');
   }
@@ -1301,7 +1575,16 @@ export async function startStudentExamSession(
     body: JSON.stringify({ accessCode: accessCode.trim() }),
   });
 
-  const data = await resp.json();
+  const data = await safeParseJsonResponse<{
+    error?: string;
+    attemptId?: string;
+    resumed?: boolean;
+    attemptNumber?: number;
+    startedAtMs?: number;
+    expiresAtMs?: number;
+    savedAnswers?: Record<string, string>;
+    attemptPermit?: string;
+  }>(resp);
   if (!resp.ok) {
     throw new Error(data.error || 'Could not start examination session.');
   }
@@ -1414,7 +1697,17 @@ export async function submitStudentExamAttempt(params: {
     }),
   });
 
-  const graded = await resp.json();
+  const graded = await safeParseJsonResponse<{
+    error?: string;
+    status?: ExamAttemptStatus;
+    marksObtained?: number;
+    totalMarks?: number;
+    percentage?: number;
+    passed?: boolean;
+    resultsPublished?: boolean;
+    reviewBreakdown?: QuestionGradingBreakdown[];
+    serverReceipt?: string;
+  }>(resp);
   if (!resp.ok) {
     throw new Error(graded.error || 'Examination submission could not be graded.');
   }
@@ -1496,7 +1789,10 @@ export async function gradeOrAdjustStudentAttemptByAdmin(params: {
     }),
   });
 
-  const signed = await signResp.json();
+  const signed = await safeParseJsonResponse<{
+    error?: string;
+    serverReceipt?: string;
+  }>(signResp);
   if (!signResp.ok) {
     throw new Error(signed.error || 'Failed to sign graded result on server.');
   }
@@ -1531,8 +1827,7 @@ export async function syncExamRankBoardAndPublicationByAdmin(params: {
   anonymizeRankBoard: boolean;
   allAttemptsForExam: ExamAttempt[];
 }): Promise<void> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Administrator authentication required.');
+  const user = requireAdminFirebaseUser();
 
   const headers = await getBearerHeaders({ 'Content-Type': 'application/json' });
   await fetch('/api/admin/rank-board/visibility', {
@@ -1660,8 +1955,14 @@ export async function createAnnouncementDocument(input: {
   publishedAtMs?: number;
   published: boolean;
 }): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Administrator authentication required.');
+  const user = requireAdminFirebaseUser();
+  const rawImage = (input.imageUrl || '').trim();
+  if (rawImage.toLowerCase().startsWith('data:')) {
+    throw new Error(
+      'Inline base64 data URLs cannot be stored in cloud notices. Upload a PNG/JPG/WebP file or paste a Google Drive / HTTPS image link.'
+    );
+  }
+  const normalizedImageUrl = normalizeAnnouncementImageUrl(rawImage);
   const id = makeDocId('ann');
 
   try {
@@ -1671,7 +1972,7 @@ export async function createAnnouncementDocument(input: {
       category: input.category,
       priority: input.priority,
       isImportant: Boolean(input.isImportant ?? input.category === 'Important Announcement'),
-      imageUrl: (input.imageUrl || '').trim().slice(0, 1500),
+      imageUrl: normalizedImageUrl,
       publishedAt: input.publishedAtMs
         ? Timestamp.fromMillis(input.publishedAtMs)
         : serverTimestamp(),
@@ -1706,6 +2007,14 @@ export async function updateAnnouncementDocument(
     published: boolean;
   }>
 ): Promise<void> {
+  const rawImage = (updates.imageUrl ?? ann.imageUrl ?? '').trim();
+  if (rawImage.toLowerCase().startsWith('data:')) {
+    throw new Error(
+      'Inline base64 data URLs cannot be stored in cloud notices. Upload a PNG/JPG/WebP file or paste a Google Drive / HTTPS image link.'
+    );
+  }
+  const normalizedImageUrl = normalizeAnnouncementImageUrl(rawImage);
+
   try {
     await updateDoc(doc(db, 'announcements', ann.id), {
       title: (updates.title ?? ann.title).trim().slice(0, 160),
@@ -1713,8 +2022,10 @@ export async function updateAnnouncementDocument(
       category: updates.category ?? ann.category,
       priority: updates.priority ?? ann.priority,
       isImportant: updates.isImportant ?? ann.isImportant,
-      imageUrl: (updates.imageUrl ?? ann.imageUrl ?? '').trim().slice(0, 1500),
-      publishedAt: Timestamp.fromMillis(updates.publishedAtMs ?? ann.publishedAtMs ?? ann.createdAtMs),
+      imageUrl: normalizedImageUrl,
+      publishedAt: Timestamp.fromMillis(
+        updates.publishedAtMs ?? ann.publishedAtMs ?? ann.createdAtMs
+      ),
       published: updates.published ?? ann.published,
       updatedAt: serverTimestamp(),
     });
@@ -2564,3 +2875,25 @@ export async function reorderCustomRankEntry(params: {
     handleFirestoreError(error, OperationType.UPDATE, `rankBoardEntries/${params.board.id}`);
   }
 }
+
+export async function linkAdminPasswordToGoogleAccount(password: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || (user.email || '').toLowerCase() !== BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
+    throw new Error(
+      `Sign in with Google as ${BOOTSTRAPPED_ADMIN_EMAIL} first before syncing your cross-device password.`
+    );
+  }
+  if (!password || password.length < 6) {
+    throw new Error('Password must be at least 6 characters long.');
+  }
+
+  const hasPasswordProvider = user.providerData.some((p) => p.providerId === 'password');
+  if (hasPasswordProvider) {
+    await updatePassword(user, password);
+    return;
+  }
+
+  const cred = EmailAuthProvider.credential(BOOTSTRAPPED_ADMIN_EMAIL, password);
+  await linkWithCredential(user, cred);
+}
+

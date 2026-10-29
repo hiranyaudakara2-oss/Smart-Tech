@@ -8,32 +8,42 @@ import type { Announcement } from '../types/platform';
 
 interface ImportantNoticePopupProps {
   onNavigateToAnnouncements?: () => void;
+  announcement?: Announcement | null;
+  onClose?: () => void;
 }
 
 function getDismissKey(ann: Announcement): string {
   return `smart_tech_notice_dismissed_${ann.id}_${ann.updatedAtMs || ann.createdAtMs}`;
 }
 
-export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNoticePopupProps) {
-  const { publishedAnnouncements, dataLoading, firebaseUser } = usePlatform();
+export function ImportantNoticePopup({
+  onNavigateToAnnouncements,
+  announcement,
+  onClose,
+}: ImportantNoticePopupProps) {
+  const { publishedAnnouncements, dataLoading, firebaseUser, readAnnouncementIds } = usePlatform();
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const featuredNotice = useMemo<Announcement | null>(() => {
+  const autoFeaturedNotice = useMemo<Announcement | null>(() => {
     if (!publishedAnnouncements || publishedAnnouncements.length === 0) return null;
     const importantList = publishedAnnouncements.filter(
-      (a) => a.published && (a.isImportant || a.category === 'Important Announcement' || a.priority === 'urgent')
+      (a) =>
+        a.published &&
+        (a.isImportant || a.category === 'Important Announcement' || a.priority === 'urgent')
     );
-    const pool = importantList.length > 0 ? importantList : publishedAnnouncements.filter((a) => a.published);
-    if (pool.length === 0) return null;
-    return [...pool].sort(
+    if (importantList.length === 0) return null;
+    return [...importantList].sort(
       (a, b) => (b.publishedAtMs || b.createdAtMs) - (a.publishedAtMs || a.createdAtMs)
     )[0];
   }, [publishedAnnouncements]);
 
-  const currentStorageKey = featuredNotice ? getDismissKey(featuredNotice) : null;
+  const activeNotice = announcement !== undefined ? announcement : autoFeaturedNotice;
+  const isManualSelection = announcement !== undefined && announcement !== null;
+  const currentStorageKey = activeNotice ? getDismissKey(activeNotice) : null;
 
   const isAlreadyDismissed = useMemo(() => {
+    if (isManualSelection) return false;
     if (!currentStorageKey) return true;
     if (dismissedKey === currentStorageKey) return true;
     try {
@@ -41,18 +51,18 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
     } catch {
       return false;
     }
-  }, [currentStorageKey, dismissedKey]);
+  }, [currentStorageKey, dismissedKey, isManualSelection]);
 
   useEffect(() => {
-    setExpanded(false);
-  }, [featuredNotice?.id]);
+    setExpanded(Boolean(isManualSelection));
+  }, [activeNotice?.id, isManualSelection]);
 
-  if (dataLoading || !featuredNotice || isAlreadyDismissed) {
+  if ((!isManualSelection && dataLoading) || !activeNotice || isAlreadyDismissed) {
     return null;
   }
 
   const handleClose = () => {
-    if (currentStorageKey) {
+    if (!isManualSelection && currentStorageKey) {
       try {
         window.sessionStorage.setItem(currentStorageKey, '1');
       } catch {
@@ -60,14 +70,15 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
       }
       setDismissedKey(currentStorageKey);
     }
-    if (firebaseUser) {
-      markAnnouncementAsRead(firebaseUser.uid, featuredNotice.id).catch(() => undefined);
+    if (firebaseUser && firebaseUser.emailVerified && !readAnnouncementIds.has(activeNotice.id)) {
+      markAnnouncementAsRead(firebaseUser.uid, activeNotice.id).catch(() => undefined);
     }
+    onClose?.();
   };
 
-  const isLongMessage = featuredNotice.body.length > 220;
+  const isLongMessage = activeNotice.body.length > 220;
   const displayTime = formatColomboDateTime(
-    featuredNotice.publishedAtMs || featuredNotice.createdAtMs
+    activeNotice.publishedAtMs || activeNotice.createdAtMs
   );
 
   return (
@@ -79,7 +90,7 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
     >
       <div
         className={`glass-panel relative w-full max-w-xl overflow-hidden rounded-2xl border transition-transform duration-200 ${
-          featuredNotice.isImportant || featuredNotice.priority === 'urgent'
+          activeNotice.isImportant || activeNotice.priority === 'urgent'
             ? 'border-cyan-400/45 shadow-2xl shadow-cyan-950/50'
             : 'border-sky-400/25 shadow-xl'
         }`}
@@ -89,15 +100,15 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
           <div className="flex items-center gap-2.5 text-xs">
             <Bell
               className={`h-4 w-4 shrink-0 ${
-                featuredNotice.isImportant ? 'text-cyan-300' : 'text-sky-400'
+                activeNotice.isImportant ? 'text-cyan-300' : 'text-sky-400'
               }`}
               aria-hidden="true"
             />
             <div className="flex flex-wrap items-center gap-1.5 text-slate-300">
               <span className="font-semibold text-cyan-300">
-                {featuredNotice.isImportant
+                {activeNotice.isImportant
                   ? 'Important Administrator Notice'
-                  : featuredNotice.category}
+                  : activeNotice.category}
               </span>
               <span aria-hidden="true">·</span>
               <span className="font-mono text-[11px] text-slate-400 tabular-nums">
@@ -117,24 +128,24 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
         </div>
 
         {/* Optional Notice Image */}
-        {featuredNotice.imageUrl && (
+        {activeNotice.imageUrl && (
           <div className="max-h-60 w-full overflow-hidden border-b border-slate-800/80 bg-[#060b18]">
             <ResilientImage
-              src={featuredNotice.imageUrl}
-              alt={featuredNotice.title}
-              fallbackLabel={featuredNotice.category}
+              src={activeNotice.imageUrl}
+              alt={activeNotice.title}
+              fallbackLabel={activeNotice.category}
               className="max-h-60 w-full object-cover"
             />
           </div>
         )}
 
         {/* Body Content */}
-        <div className="max-h-[65vh] overflow-y-auto px-6 py-5">
+        <div className="max-h-[65dvh] overflow-y-auto px-6 py-5">
           <h2
             id="important-notice-popup-title"
             className="font-display text-xl font-bold leading-snug text-slate-50"
           >
-            {featuredNotice.title}
+            {activeNotice.title}
           </h2>
 
           <p
@@ -142,11 +153,11 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
               !expanded && isLongMessage ? 'line-clamp-4' : ''
             }`}
           >
-            {featuredNotice.body}
+            {activeNotice.body}
           </p>
 
           <p className="mt-4 text-xs text-slate-400">
-            Published by {featuredNotice.authorName || 'Platform Administrator'}
+            Published by {activeNotice.authorName || 'Platform Administrator'}
           </p>
         </div>
 
@@ -157,7 +168,7 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
               <button
                 type="button"
                 onClick={() => setExpanded((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200 whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-cyan-300 hover:text-cyan-200"
               >
                 {expanded ? (
                   <>
@@ -180,7 +191,7 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
                   handleClose();
                   onNavigateToAnnouncements();
                 }}
-                className="text-xs font-medium text-slate-300 underline-offset-4 hover:text-white hover:underline whitespace-nowrap"
+                className="whitespace-nowrap text-xs font-medium text-slate-300 underline-offset-4 hover:text-white hover:underline"
               >
                 View All Announcements
               </button>
@@ -190,9 +201,9 @@ export function ImportantNoticePopup({ onNavigateToAnnouncements }: ImportantNot
           <button
             type="button"
             onClick={handleClose}
-            className="rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-400 whitespace-nowrap shrink-0"
+            className="min-h-[40px] shrink-0 whitespace-nowrap rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-400"
           >
-            Acknowledge & Close
+            Acknowledge &amp; Close
           </button>
         </div>
       </div>

@@ -1,20 +1,22 @@
 import React, { useState } from 'react';
 import {
   AlertTriangle,
+  ExternalLink,
   Eye,
   EyeOff,
   Loader2,
   Lock,
   LogOut,
   ShieldAlert,
-  ShieldCheck,
 } from 'lucide-react';
 import { usePlatform } from '../context/PlatformContext';
+import { BOOTSTRAPPED_ADMIN_EMAIL, FIREBASE_PROJECT_ID } from '../lib/firebase';
 
 export function AdminLoginGate() {
   const {
     firebaseUser,
     isVerifiedAdmin,
+    authDomainErrorHost,
     signInAdminWithEmailPassword,
     signInWithGoogle,
     logoutAdminSession,
@@ -22,78 +24,33 @@ export function AdminLoginGate() {
     pushToast,
   } = usePlatform();
 
-  const [email, setEmail] = useState('hiranyaudakara2@gmail.com');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Case 1: Signed in with a regular non-admin user account
-  if (firebaseUser && !isVerifiedAdmin) {
-    return (
-      <div className="mx-auto max-w-xl px-4 py-16 sm:px-6">
-        <div className="glass-panel rounded-2xl p-8 sm:p-10 border border-rose-500/30 bg-[#060b18]/95 shadow-2xl backdrop-blur-xl">
-          <div className="flex items-center gap-3.5">
-            <ShieldAlert className="h-7 w-7 shrink-0 text-rose-400" aria-hidden="true" />
-            <h1 className="font-display text-2xl font-bold text-slate-50">
-              Access Denied: Unauthorized Administrator
-            </h1>
-          </div>
-          <p className="mt-4 text-sm leading-relaxed text-slate-300">
-            You are currently authenticated as <strong className="text-slate-100">{firebaseUser.email}</strong>. 
-            Administrator privileges are strictly restricted to <strong className="text-cyan-300 font-semibold">hiranyaudakara2@gmail.com</strong>.
-          </p>
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={logoutAdminSession}
-              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2.5 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-400 whitespace-nowrap shadow-md shadow-sky-500/20"
-            >
-              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-              Sign Out &amp; Use Authorized Admin Account
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate('home')}
-              className="rounded-lg border border-slate-700 bg-slate-900/80 px-4 py-2.5 text-xs font-medium text-slate-200 hover:border-slate-500 hover:text-white whitespace-nowrap"
-            >
-              Return to Home
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Case 2: Credentials Login (Email + Password)
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
 
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      setErrorMessage('Administrator email address is required.');
-      return;
-    }
     if (!password) {
       setErrorMessage('Administrator password is required.');
       return;
     }
 
     setBusy(true);
-    const result = await signInAdminWithEmailPassword(trimmedEmail, password);
+    const result = await signInAdminWithEmailPassword(BOOTSTRAPPED_ADMIN_EMAIL, password);
     setBusy(false);
 
     if (!result.ok) {
-      setErrorMessage(result.error || 'Access Denied: Incorrect email address or password.');
+      setErrorMessage(result.error || 'Access Denied: Incorrect administrator password.');
     } else {
       setPassword('');
       pushToast('success', 'Admin session active', 'Welcome to Smart Tech Admin Dashboard.');
     }
   };
 
-  // Case 3: Google Admin Login
   const handleGoogleAdminLogin = async () => {
     setErrorMessage(null);
     setGoogleBusy(true);
@@ -106,11 +63,16 @@ export function AdminLoginGate() {
     }
   };
 
+  const signedInNonAdmin =
+    Boolean(firebaseUser) &&
+    !isVerifiedAdmin &&
+    (firebaseUser?.email || '').toLowerCase() !== BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+
   return (
-    <div className="mx-auto max-w-md px-4 py-14 sm:px-6">
-      <div className="glass-panel rounded-2xl p-7 sm:p-9 shadow-2xl border border-sky-400/30 bg-[#060b18]/95 backdrop-blur-xl">
+    <div className="mx-auto max-w-md px-4 py-10 sm:px-6 sm:py-14">
+      <div className="glass-panel rounded-2xl border border-sky-400/30 bg-[#060b18]/95 p-6 shadow-2xl backdrop-blur-xl sm:p-9">
         <div className="flex items-center gap-3.5">
-          <span className="flex h-12 w-12 items-center justify-center rounded-xl border border-sky-400/40 bg-sky-500/15 text-cyan-300 shadow-inner">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-sky-400/40 bg-sky-500/15 text-cyan-300 shadow-inner">
             <Lock className="h-6 w-6" aria-hidden="true" />
           </span>
           <div>
@@ -122,8 +84,55 @@ export function AdminLoginGate() {
         </div>
 
         <p className="mt-3 text-xs leading-relaxed text-slate-400">
-          Authorized access only. Sign in with <strong className="text-slate-200">hiranyaudakara2@gmail.com</strong> using Google Sign-In or admin credentials.
+          Authorized access on any device. Sign in with{' '}
+          <strong className="text-slate-200">{BOOTSTRAPPED_ADMIN_EMAIL}</strong> via Google Sign-In
+          or enter your administrator password below.
         </p>
+
+        {signedInNonAdmin && (
+          <div className="mt-4 rounded-xl border border-amber-500/35 bg-amber-950/30 p-3.5 text-xs leading-relaxed text-amber-100">
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+              <div className="space-y-2">
+                <p>
+                  Currently signed in as{' '}
+                  <strong className="text-white">{firebaseUser?.email}</strong>. Switch to{' '}
+                  <strong className="text-cyan-300">{BOOTSTRAPPED_ADMIN_EMAIL}</strong> or enter the
+                  administrator password below.
+                </p>
+                <button
+                  type="button"
+                  onClick={logoutAdminSession}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/40 bg-slate-950/70 px-3 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-slate-900"
+                >
+                  <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                  Sign Out Student Account
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {authDomainErrorHost && (
+          <div className="mt-4 rounded-xl border border-cyan-500/35 bg-sky-950/35 p-3.5 text-xs leading-relaxed text-slate-200">
+            <p className="font-semibold text-cyan-300">
+              Add Netlify Domain to Firebase Authorized Domains
+            </p>
+            <p className="mt-1 text-slate-300">
+              To enable Google Sign-In on <code className="font-mono text-white">{authDomainErrorHost}</code>,
+              add it in Firebase Authentication settings (or sign in immediately with your password below).
+            </p>
+            <a
+              href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/settings`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 font-semibold text-cyan-300 underline hover:text-white"
+            >
+              <span>Open Firebase Authorized Domains</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        )}
 
         {errorMessage && (
           <div
@@ -138,13 +147,13 @@ export function AdminLoginGate() {
           </div>
         )}
 
-        {/* Method 1: Google Sign-In */}
+        {/* Method 1: Google Sign-In (Popup with Mobile Redirect Fallback) */}
         <div className="mt-6">
           <button
             type="button"
             disabled={busy || googleBusy}
             onClick={handleGoogleAdminLogin}
-            className="flex w-full items-center justify-center gap-2.5 rounded-lg bg-sky-500 px-5 py-3 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-50 shadow-lg shadow-sky-500/20"
+            className="flex min-h-[44px] w-full items-center justify-center gap-2.5 rounded-lg bg-sky-500 px-5 py-3 text-xs font-semibold text-slate-950 shadow-lg shadow-sky-500/20 transition-colors hover:bg-cyan-400 disabled:opacity-50"
           >
             {googleBusy ? (
               <Loader2 className="h-4 w-4 animate-spin text-slate-950" aria-hidden="true" />
@@ -174,16 +183,19 @@ export function AdminLoginGate() {
 
         <div className="my-5 flex items-center gap-3">
           <div className="h-px flex-1 bg-slate-800" />
-          <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Or Login with Password</span>
+          <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+            Or Login with Password
+          </span>
           <div className="h-px flex-1 bg-slate-800" />
         </div>
 
-        {/* Method 2: Email & Password Form */}
+        {/* Method 2: Password Form (Email input removed per design preference) */}
         <form onSubmit={handleLoginSubmit} noValidate className="space-y-4">
-
-
           <div>
-            <label htmlFor="admin-login-password" className="block text-xs font-medium text-slate-300 mb-1.5">
+            <label
+              htmlFor="admin-login-password"
+              className="mb-1.5 block text-xs font-medium text-slate-300"
+            >
               Password
             </label>
             <div className="relative">
@@ -195,13 +207,13 @@ export function AdminLoginGate() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter password"
-                className="w-full rounded-lg border border-slate-700/80 bg-[#060b18] py-2.5 pl-3.5 pr-11 text-sm text-slate-100 placeholder-slate-500 focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-400 transition-colors"
+                className="min-h-[44px] w-full rounded-lg border border-slate-700/80 bg-[#060b18] py-2.5 pl-3.5 pr-11 text-sm text-slate-100 placeholder-slate-500 transition-colors focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-400"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword((prev) => !prev)}
                 aria-label={showPassword ? 'Hide password' : 'Show password'}
-                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:text-slate-100"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-400 transition-colors hover:text-slate-100"
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
@@ -211,7 +223,7 @@ export function AdminLoginGate() {
           <button
             type="submit"
             disabled={busy || googleBusy}
-            className="w-full rounded-lg border border-slate-700/80 bg-slate-900/90 px-4 py-2.5 text-xs font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50"
+            className="min-h-[44px] w-full rounded-lg border border-slate-700/80 bg-slate-900/90 px-4 py-2.5 text-xs font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50"
           >
             {busy ? 'Authenticating Credentials...' : 'Sign In with Password'}
           </button>
@@ -221,16 +233,16 @@ export function AdminLoginGate() {
           <button
             type="button"
             onClick={() => navigate('home')}
-            className="hover:text-slate-200 transition-colors"
+            className="py-1 transition-colors hover:text-slate-200"
           >
             ← Return to Home
           </button>
           <button
             type="button"
-            onClick={logoutAdminSession}
-            className="text-slate-400 hover:text-rose-300 transition-colors"
+            onClick={() => navigate('setup-guide')}
+            className="py-1 text-cyan-400 transition-colors hover:text-cyan-300"
           >
-            Clear Session
+            Netlify Setup Guide
           </button>
         </div>
       </div>

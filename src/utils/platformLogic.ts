@@ -1,12 +1,15 @@
 import type {
   CustomRankEntry,
+  ExamAttempt,
   ExamAttemptStatus,
   ExamPaper,
   ExamQuestionFull,
   ExamQuestionPublic,
   NoteResource,
+  OnlineExam,
   QuestionGradingBreakdown,
   RankBoardCategory,
+  UserActivity,
 } from '../types/platform';
 
 export const VALID_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
@@ -14,6 +17,7 @@ export const SIX_DIGIT_CODE_REGEX = /^\d{6}$/;
 export const GOOGLE_FORMS_URL_REGEX = /^https:\/\/(docs\.google\.com\/forms\/|forms\.gle\/).+/;
 export const GOOGLE_DRIVE_URL_REGEX = /^https:\/\/(drive\.google\.com|docs\.google\.com)\/.+/;
 export const MAX_PDF_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_NOTICE_IMAGE_BYTES = 5 * 1024 * 1024;
 export const COLOMBO_OFFSET_MINUTES = 330; // UTC+05:30 (Asia/Colombo has no DST)
 
 export type ExamScheduleState = 'upcoming' | 'open' | 'closed';
@@ -192,6 +196,79 @@ export function sanitizeStorageFileName(rawName: string): string {
   return cleaned.length > 4 ? cleaned : `document_${cleaned}`;
 }
 
+export interface ImageSignatureResult {
+  valid: boolean;
+  ext: 'png' | 'jpg' | 'webp';
+  mime: string;
+}
+
+export function verifyImageMagicBytes(bytes: Uint8Array): ImageSignatureResult {
+  if (!bytes || bytes.length < 3) {
+    return { valid: false, ext: 'png', mime: '' };
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return { valid: true, ext: 'png', mime: 'image/png' };
+  }
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { valid: true, ext: 'jpg', mime: 'image/jpeg' };
+  }
+  // WebP: RIFF....WEBP
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return { valid: true, ext: 'webp', mime: 'image/webp' };
+  }
+  return { valid: false, ext: 'png', mime: '' };
+}
+
+export function sanitizeImageStorageFileName(
+  rawName: string,
+  ext: 'png' | 'jpg' | 'webp'
+): string {
+  const withoutExt = (rawName || 'notice_banner')
+    .trim()
+    .replace(/\.(png|jpe?g|webp)$/i, '');
+  const cleaned = withoutExt
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 96);
+  return `${cleaned || 'notice_banner'}.${ext}`;
+}
+
+export function normalizeAnnouncementImageUrl(rawUrl: string): string {
+  if (typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+  if (GOOGLE_DRIVE_URL_REGEX.test(trimmed)) {
+    const driveFileId = extractGoogleDriveFileId(trimmed);
+    if (driveFileId) {
+      return `https://drive.google.com/thumbnail?id=${driveFileId}&sz=w1600`.slice(0, 1500);
+    }
+  }
+  return trimmed.slice(0, 1500);
+}
+
 export function parseTagsInput(raw: string): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -243,6 +320,13 @@ export function evaluateExamStatus(
     remainingMs: Math.max(0, closesAtMs - serverNowMs),
     canAccessForm: true,
   };
+}
+
+export function evaluateExamSchedule(
+  exam: { opensAtMs: number; closesAtMs: number },
+  serverNowMs: number
+): ExamEvaluation {
+  return evaluateExamStatus(exam.opensAtMs, exam.closesAtMs, serverNowMs);
 }
 
 export function formatCountdown(ms: number): string {
@@ -966,3 +1050,342 @@ export function computeManualBoardRankings<
     computedPercentage: item.computedPercentage,
   }));
 }
+
+export async function safeParseJsonResponse<T = Record<string, unknown>>(res: Response): Promise<T> {
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      res.status >= 400
+        ? `Server returned HTTP status ${res.status}`
+        : 'Server returned a non-JSON response.'
+    );
+  }
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new Error('Unable to parse JSON payload from server.');
+  }
+}
+
+export function extractGoogleDriveFileId(rawUrl: string): string | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  const fileMatch = /\/(?:file|document|presentation|spreadsheets)\/d\/([a-zA-Z0-9_-]{8,})/.exec(
+    trimmed
+  );
+  if (fileMatch?.[1]) return fileMatch[1];
+  try {
+    const parsed = new URL(trimmed);
+    const idParam = parsed.searchParams.get('id');
+    if (idParam && /^[a-zA-Z0-9_-]{8,}$/.test(idParam.trim())) {
+      return idParam.trim();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function resolveResourcePreviewUrl(item: {
+  sourceType?: string;
+  driveUrl?: string;
+  pdfUrl: string;
+}): string {
+  const target = getResourceTargetUrl(item);
+  if (!target) return '';
+  if (isGoogleDriveResource(item)) {
+    const fileId = extractGoogleDriveFileId(target);
+    if (fileId) {
+      return `https://drive.google.com/file/d/${fileId}/preview`;
+    }
+  }
+  return target;
+}
+
+function isIosBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function clickAnchorSafely(href: string, opts?: { downloadName?: string; newTab?: boolean }): void {
+  if (typeof document === 'undefined') return;
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  if (opts?.downloadName) {
+    anchor.download = opts.downloadName;
+  }
+  if (opts?.newTab) {
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+  }
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  window.setTimeout(() => {
+    if (anchor.parentNode) {
+      anchor.parentNode.removeChild(anchor);
+    }
+  }, 200);
+}
+
+export async function triggerCrossBrowserResourceDownload(item: {
+  title: string;
+  fileName?: string;
+  sourceType?: string;
+  driveUrl?: string;
+  pdfUrl: string;
+}): Promise<void> {
+  const targetUrl = getResourceTargetUrl(item);
+  if (!targetUrl) {
+    throw new Error('No document URL is configured for this resource.');
+  }
+
+  const safeDownloadName = sanitizeStorageFileName(item.fileName || `${item.title || 'document'}.pdf`);
+
+  if (isGoogleDriveResource(item)) {
+    const fileId = extractGoogleDriveFileId(targetUrl);
+    const driveHref = fileId
+      ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`
+      : targetUrl;
+    clickAnchorSafely(driveHref, { newTab: true });
+    return;
+  }
+
+  // Same-origin /api/ PDF endpoints support ?download=1 Content-Disposition: attachment
+  if (targetUrl.startsWith('/api/')) {
+    const sep = targetUrl.includes('?') ? '&' : '?';
+    const downloadUrl = targetUrl.includes('download=1') ? targetUrl : `${targetUrl}${sep}download=1`;
+    clickAnchorSafely(downloadUrl, {
+      downloadName: safeDownloadName,
+      newTab: isIosBrowser(),
+    });
+    return;
+  }
+
+  // Cross-origin HTTPS PDF (e.g., Firebase Cloud Storage):
+  // On iOS Safari, opening in a new tab invokes the native PDF viewer with "Save to Files".
+  if (isIosBrowser()) {
+    clickAnchorSafely(targetUrl, { newTab: true });
+    return;
+  }
+
+  // On Desktop & Android browsers, try fetching as a Blob so the browser saves directly with the exact filename;
+  // fall back cleanly to opening the HTTPS PDF link if CORS blocks direct fetch.
+  try {
+    const resp = await fetch(targetUrl, { mode: 'cors' });
+    if (resp.ok) {
+      const blob = await resp.blob();
+      if (blob.size > 0) {
+        const blobUrl = URL.createObjectURL(blob);
+        clickAnchorSafely(blobUrl, { downloadName: safeDownloadName });
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 15_000);
+        return;
+      }
+    }
+  } catch {
+    // Fall back to direct anchor open below
+  }
+
+  clickAnchorSafely(targetUrl, { downloadName: safeDownloadName, newTab: true });
+}
+
+export interface StudentNoteProgressItem {
+  note: NoteResource;
+  completed: boolean;
+  lastActivityAtMs: number;
+  lastAction: UserActivity['action'] | null;
+}
+
+export interface StudentExamProgressItem {
+  exam: OnlineExam;
+  status: 'completed' | 'in_progress' | 'pending';
+  latestAttempt: ExamAttempt | null;
+  completedAtMs: number;
+}
+
+export interface StudentLearningProgress {
+  notesCompleted: number;
+  notesTotal: number;
+  notesPercentage: number;
+  examsCompleted: number;
+  examsInProgress: number;
+  examsTotal: number;
+  examsPercentage: number;
+  overallCompleted: number;
+  overallTotal: number;
+  overallPercentage: number;
+  noteItems: StudentNoteProgressItem[];
+  examItems: StudentExamProgressItem[];
+}
+
+export function calculateStudentLearningProgress(params: {
+  publishedNotes: NoteResource[];
+  publishedExams: OnlineExam[];
+  examAttempts: ExamAttempt[];
+  userActivities: UserActivity[];
+  subjectFilter?: string;
+  gradeFilter?: string;
+}): StudentLearningProgress {
+  const subjectFilter = (params.subjectFilter || 'all').trim();
+  const gradeFilter = (params.gradeFilter || 'all').trim();
+
+  const matchesScope = (item: { subject: string; grade: string }): boolean => {
+    if (subjectFilter !== 'all' && item.subject !== subjectFilter) {
+      return false;
+    }
+    if (gradeFilter !== 'all' && item.grade !== gradeFilter) {
+      return false;
+    }
+    return true;
+  };
+
+  const assignedNotes = params.publishedNotes.filter(
+    (n) => n.published !== false && matchesScope(n)
+  );
+  const assignedExams = params.publishedExams.filter(
+    (e) => e.published !== false && matchesScope(e)
+  );
+
+  // Map latest valid note completion activity by resourceId
+  const noteCompletionMap = new Map<
+    string,
+    { lastActivityAtMs: number; lastAction: UserActivity['action'] }
+  >();
+  for (const act of params.userActivities) {
+    if (
+      act.resourceType === 'note' &&
+      (act.action === 'viewed' || act.action === 'downloaded') &&
+      act.resourceId
+    ) {
+      const existing = noteCompletionMap.get(act.resourceId);
+      if (!existing || act.createdAtMs >= existing.lastActivityAtMs) {
+        noteCompletionMap.set(act.resourceId, {
+          lastActivityAtMs: act.createdAtMs,
+          lastAction: act.action,
+        });
+      }
+    }
+  }
+
+  // Map exam activity records by resourceId (used for Google Form exams or explicit exam submissions)
+  const examActivityMap = new Map<
+    string,
+    { hasSubmitted: boolean; hasOpened: boolean; latestMs: number }
+  >();
+  for (const act of params.userActivities) {
+    if (
+      act.resourceType === 'exam' &&
+      (act.action === 'submitted_exam' || act.action === 'opened_exam') &&
+      act.resourceId
+    ) {
+      const prev = examActivityMap.get(act.resourceId) || {
+        hasSubmitted: false,
+        hasOpened: false,
+        latestMs: 0,
+      };
+      examActivityMap.set(act.resourceId, {
+        hasSubmitted: prev.hasSubmitted || act.action === 'submitted_exam',
+        hasOpened: prev.hasOpened || act.action === 'opened_exam',
+        latestMs: Math.max(prev.latestMs, act.createdAtMs),
+      });
+    }
+  }
+
+  // Group exam attempts by examId
+  const attemptsByExamId = new Map<string, ExamAttempt[]>();
+  for (const att of params.examAttempts) {
+    if (!att.examId) continue;
+    const list = attemptsByExamId.get(att.examId) || [];
+    list.push(att);
+    attemptsByExamId.set(att.examId, list);
+  }
+
+  const noteItems: StudentNoteProgressItem[] = assignedNotes.map((note) => {
+    const match = noteCompletionMap.get(note.id);
+    return {
+      note,
+      completed: Boolean(match),
+      lastActivityAtMs: match?.lastActivityAtMs ?? 0,
+      lastAction: match?.lastAction ?? null,
+    };
+  });
+
+  const examItems: StudentExamProgressItem[] = assignedExams.map((exam) => {
+    const attempts = (attemptsByExamId.get(exam.id) || []).slice().sort((a, b) => {
+      const timeB = b.submittedAtMs || b.startedAtMs || 0;
+      const timeA = a.submittedAtMs || a.startedAtMs || 0;
+      return timeB - timeA;
+    });
+
+    const submittedAttempt =
+      attempts.find((a) => a.status === 'graded' || a.status === 'pending_review') || null;
+    const inProgressAttempt = attempts.find((a) => a.status === 'in_progress') || null;
+    const activity = examActivityMap.get(exam.id);
+
+    const isCompleted =
+      exam.examMode === 'google_form'
+        ? Boolean(submittedAttempt || activity?.hasSubmitted || activity?.hasOpened)
+        : Boolean(submittedAttempt || activity?.hasSubmitted);
+
+    if (isCompleted) {
+      return {
+        exam,
+        status: 'completed',
+        latestAttempt: submittedAttempt || attempts[0] || null,
+        completedAtMs: submittedAttempt?.submittedAtMs || activity?.latestMs || 0,
+      };
+    }
+
+    if (inProgressAttempt) {
+      return {
+        exam,
+        status: 'in_progress',
+        latestAttempt: inProgressAttempt,
+        completedAtMs: 0,
+      };
+    }
+
+    return {
+      exam,
+      status: 'pending',
+      latestAttempt: null,
+      completedAtMs: 0,
+    };
+  });
+
+  const notesCompleted = noteItems.filter((item) => item.completed).length;
+  const notesTotal = noteItems.length;
+  const notesPercentage =
+    notesTotal > 0 ? Math.min(100, Math.max(0, Math.round((notesCompleted / notesTotal) * 100))) : 0;
+
+  const examsCompleted = examItems.filter((item) => item.status === 'completed').length;
+  const examsInProgress = examItems.filter((item) => item.status === 'in_progress').length;
+  const examsTotal = examItems.length;
+  const examsPercentage =
+    examsTotal > 0 ? Math.min(100, Math.max(0, Math.round((examsCompleted / examsTotal) * 100))) : 0;
+
+  const overallCompleted = notesCompleted + examsCompleted;
+  const overallTotal = notesTotal + examsTotal;
+  const overallPercentage =
+    overallTotal > 0
+      ? Math.min(100, Math.max(0, Math.round((overallCompleted / overallTotal) * 100)))
+      : 0;
+
+  return {
+    notesCompleted,
+    notesTotal,
+    notesPercentage,
+    examsCompleted,
+    examsInProgress,
+    examsTotal,
+    examsPercentage,
+    overallCompleted,
+    overallTotal,
+    overallPercentage,
+    noteItems,
+    examItems,
+  };
+}
+
+

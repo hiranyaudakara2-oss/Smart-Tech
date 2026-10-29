@@ -223,6 +223,51 @@ function simulatePermission(
     return 'ALLOW';
   }
 
+  if (op.collection === 'announcementReads') {
+    if (op.method === 'get') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      if (!op.existing) return 'ALLOW';
+      return op.existing.userId === ctx.auth!.uid ? 'ALLOW' : 'PERMISSION_DENIED';
+    }
+    if (op.method === 'create') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      const d = op.data || {};
+      const keys = Object.keys(d);
+      if (keys.length !== 3) return 'PERMISSION_DENIED';
+      for (const k of keys) {
+        if (k !== 'userId' && k !== 'announcementId' && k !== 'readAt') {
+          return 'PERMISSION_DENIED';
+        }
+      }
+      const userId = String(d.userId || '');
+      const announcementId = String(d.announcementId || '');
+      if (!VALID_ID.test(userId) || !VALID_ID.test(announcementId)) return 'PERMISSION_DENIED';
+      if (userId !== ctx.auth!.uid) return 'PERMISSION_DENIED';
+      if (d.readAt !== ctx.serverTimeMs) return 'PERMISSION_DENIED';
+      if (!ctx.existingDocs.has(`/users/${userId}`)) return 'PERMISSION_DENIED';
+      if (!ctx.existingDocs.has(`/announcements/${announcementId}`)) return 'PERMISSION_DENIED';
+      return 'ALLOW';
+    }
+    if (op.method === 'update') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      const d = op.data || {};
+      const ex = op.existing || {};
+      const keys = Object.keys(d);
+      if (keys.length !== 3) return 'PERMISSION_DENIED';
+      for (const k of keys) {
+        if (k !== 'userId' && k !== 'announcementId' && k !== 'readAt') {
+          return 'PERMISSION_DENIED';
+        }
+      }
+      if (d.userId !== ex.userId || d.announcementId !== ex.announcementId) {
+        return 'PERMISSION_DENIED';
+      }
+      if (d.userId !== ctx.auth!.uid) return 'PERMISSION_DENIED';
+      if (d.readAt !== ctx.serverTimeMs) return 'PERMISSION_DENIED';
+      return 'ALLOW';
+    }
+  }
+
   if (op.collection === 'auditLogs' && (op.method === 'update' || op.method === 'delete')) {
     return 'PERMISSION_DENIED';
   }
@@ -552,3 +597,137 @@ test('All Dirty Dozen adversarial payloads + Drive URL & Rank Board access guard
     'ALLOW'
   );
 });
+
+test('announcementReads allows non-existent get, verified owner create, and idempotent readAt update while blocking cross-user and ghost-field attacks', () => {
+  const SERVER_TIME = 1_730_000_000_000;
+  const studentCtx: SimContext = {
+    auth: {
+      uid: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+      email: 'hiranyaudakara2@gmail.com',
+      emailVerified: true,
+    },
+    serverTimeMs: SERVER_TIME,
+    existingDocs: new Set([
+      '/users/9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+      '/announcements/ann_1793240573202_t6rwdgz9',
+    ]),
+    afterDocs: new Set(),
+    examsById: new Map(),
+  };
+
+  const readDocId = '9apEFXVsZNY8x6IE8J0ZoKzHfAE2_ann_1793240573202_t6rwdgz9';
+
+  // 1. Probing a non-existent announcementReads document does NOT fail with PERMISSION_DENIED
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'get',
+        collection: 'announcementReads',
+        docId: readDocId,
+      },
+      studentCtx
+    ),
+    'ALLOW'
+  );
+
+  // 2. Reading another user's existing announcementReads receipt is strictly DENIED
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'get',
+        collection: 'announcementReads',
+        docId: 'other_user_ann_1793240573202_t6rwdgz9',
+        existing: {
+          userId: 'other_user',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME - 5000,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  // 3. Creating own announcementReads receipt with serverTimestamp succeeds
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'create',
+        collection: 'announcementReads',
+        docId: readDocId,
+        data: {
+          userId: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME,
+        },
+      },
+      studentCtx
+    ),
+    'ALLOW'
+  );
+
+  // 4. Idempotent re-acknowledgment (setDoc update on readAt) succeeds
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'update',
+        collection: 'announcementReads',
+        docId: readDocId,
+        existing: {
+          userId: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME - 10_000,
+        },
+        data: {
+          userId: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME,
+        },
+      },
+      studentCtx
+    ),
+    'ALLOW'
+  );
+
+  // 5. Forged client timestamp or ghost field on announcementReads is DENIED
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'create',
+        collection: 'announcementReads',
+        docId: readDocId,
+        data: {
+          userId: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME - 99_999,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'update',
+        collection: 'announcementReads',
+        docId: readDocId,
+        existing: {
+          userId: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME - 10_000,
+        },
+        data: {
+          userId: '9apEFXVsZNY8x6IE8J0ZoKzHfAE2',
+          announcementId: 'ann_1793240573202_t6rwdgz9',
+          readAt: SERVER_TIME,
+          ghostField: true,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+});
+

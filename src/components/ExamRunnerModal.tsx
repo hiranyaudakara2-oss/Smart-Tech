@@ -199,8 +199,9 @@ export function ExamRunnerModal({
     e.preventDefault();
     setGateError(null);
 
+    const requiresCode = exam.accessCodeProtected !== false;
     const trimmedCode = accessCode.trim();
-    if (!isValidSixDigitCode(trimmedCode)) {
+    if (requiresCode && !isValidSixDigitCode(trimmedCode)) {
       setGateError('Enter a valid 6-digit numeric examination password (e.g., 482731).');
       return;
     }
@@ -263,7 +264,7 @@ export function ExamRunnerModal({
       role="dialog"
       aria-modal="true"
       aria-label={`Online Examination: ${exam.title}`}
-      className="fixed inset-0 z-50 flex flex-col bg-[#040915]/95 backdrop-blur-md"
+      className="fixed inset-0 z-50 flex h-[100dvh] flex-col bg-[#040915]/95 backdrop-blur-md"
     >
       {/* Top Bar */}
       <div className="border-b border-slate-800/90 bg-[#071022] px-4 py-3.5 sm:px-6">
@@ -334,10 +335,14 @@ export function ExamRunnerModal({
                 </span>
                 <div>
                   <p className="text-xs font-medium text-cyan-300">
-                    Protected Online Examination
+                    {exam.accessCodeProtected !== false
+                      ? 'Protected Online Examination'
+                      : 'Timed Online Examination'}
                   </p>
                   <h3 className="font-display text-xl font-bold text-slate-50">
-                    Enter 6-Digit Examination Password
+                    {exam.accessCodeProtected !== false
+                      ? 'Enter 6-Digit Examination Password'
+                      : 'Review Instructions & Start Exam'}
                   </h3>
                 </div>
               </div>
@@ -394,30 +399,32 @@ export function ExamRunnerModal({
                 </div>
               )}
 
-              <div className="mt-5">
-                <label
-                  htmlFor="exam-six-digit-code"
-                  className="block text-xs font-medium text-slate-200"
-                >
-                  6-Digit Examination Access Password
-                </label>
-                <input
-                  id="exam-six-digit-code"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  required
-                  value={accessCode}
-                  onChange={(e) => setAccessCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  placeholder="000000"
-                  className="mt-1.5 w-full rounded-xl border border-slate-700 bg-[#050a16] px-4 py-3 text-center font-mono text-2xl font-bold tracking-[0.35em] text-cyan-300 placeholder-slate-700 focus:border-sky-400 tabular-nums"
-                />
-                <p className="mt-1.5 text-[11px] text-slate-400">
-                  Enter the exact 6-digit code shared by your instructor. Repeated failed attempts
-                  are rate-limited on the server.
-                </p>
-              </div>
+              {exam.accessCodeProtected !== false && (
+                <div className="mt-5">
+                  <label
+                    htmlFor="exam-six-digit-code"
+                    className="block text-xs font-medium text-slate-200"
+                  >
+                    6-Digit Examination Access Password
+                  </label>
+                  <input
+                    id="exam-six-digit-code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    required
+                    value={accessCode}
+                    onChange={(e) => setAccessCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    className="mt-1.5 w-full rounded-xl border border-slate-700 bg-[#050a16] px-4 py-3 text-center font-mono text-2xl font-bold tracking-[0.35em] text-cyan-300 placeholder-slate-700 focus:border-sky-400 tabular-nums"
+                  />
+                  <p className="mt-1.5 text-[11px] text-slate-400">
+                    Enter the exact 6-digit code shared by your instructor. Repeated failed attempts
+                    are rate-limited on the server.
+                  </p>
+                </div>
+              )}
 
               <div className="mt-6 flex items-center justify-end gap-3">
                 <button
@@ -429,15 +436,21 @@ export function ExamRunnerModal({
                 </button>
                 <button
                   type="submit"
-                  disabled={gateBusy || accessCode.length !== 6}
+                  disabled={
+                    gateBusy || (exam.accessCodeProtected !== false && accessCode.length !== 6)
+                  }
                   className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-50"
                 >
                   {gateBusy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
                   {gateBusy
-                    ? 'Verifying Password...'
+                    ? 'Starting Session...'
                     : activeDraftAttempt
-                    ? 'Verify & Resume Exam'
-                    : 'Verify & Start Timed Exam'}
+                    ? exam.accessCodeProtected !== false
+                      ? 'Verify & Resume Exam'
+                      : 'Resume Timed Exam'
+                    : exam.accessCodeProtected !== false
+                    ? 'Verify & Start Timed Exam'
+                    : 'Start Timed Exam'}
                 </button>
               </div>
             </form>

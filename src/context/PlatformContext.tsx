@@ -1,21 +1,31 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
+  getRedirectResult,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type User,
 } from 'firebase/auth';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import {
   auth,
+  BOOTSTRAPPED_ADMIN_EMAIL,
   db,
   FIREBASE_PROJECT_ID,
   FIRESTORE_DATABASE_ID,
   googleProvider,
+  handleFirestoreError,
+  isFirestoreOfflineOrTransientError,
+  OperationType,
   validateFirestoreConnection,
 } from '../lib/firebase';
+import { safeParseJsonResponse } from '../utils/platformLogic';
 import {
+  clearSavedAdminSessionToken,
+  getSavedAdminSessionToken,
+  saveAdminSessionToken,
   syncAuthenticatedUserProfile,
   timestampToMs,
 } from '../services/platformService';
@@ -63,6 +73,8 @@ interface PlatformContextValue {
   // Live Firestore Data
   dataLoading: boolean;
   quotaErrorUrl: string | null;
+  authDomainErrorHost: string | null;
+  dismissAuthDomainError: () => void;
   stats: PlatformStats;
   publishedNotes: NoteResource[];
   publishedPapers: ExamPaper[];
@@ -103,8 +115,15 @@ interface PlatformContextValue {
 
 const PlatformContext = createContext<PlatformContextValue | null>(null);
 
+const PENDING_AUTH_ROUTE_KEY = 'smart_tech_pending_auth_route';
+
+function isEmbeddedInAppBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /FBAN|FBAV|Instagram|Line\/|WhatsApp|TikTok|Snapchat|wv\)/i.test(ua);
+}
+
 function routeFromLocation(): NavRoute {
-  const hash = window.location.hash.replace(/^#\/?/, '').split('?')[0];
   const valid: NavRoute[] = [
     'home',
     'notes',
@@ -115,7 +134,15 @@ function routeFromLocation(): NavRoute {
     'admin',
     'setup-guide',
   ];
-  return valid.includes(hash as NavRoute) ? (hash as NavRoute) : 'home';
+  const hash = window.location.hash.replace(/^#\/?/, '').split('?')[0].replace(/\/+$/, '');
+  if (valid.includes(hash as NavRoute)) {
+    return hash as NavRoute;
+  }
+  const pathClean = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (valid.includes(pathClean as NavRoute)) {
+    return pathClean as NavRoute;
+  }
+  return 'home';
 }
 
 function mapDocToNote(id: string, d: Record<string, unknown>): NoteResource {
@@ -351,6 +378,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
 
   const [dataLoading, setDataLoading] = useState(true);
   const [quotaErrorUrl, setQuotaErrorUrl] = useState<string | null>(null);
+  const [authDomainErrorHost, setAuthDomainErrorHost] = useState<string | null>(null);
 
   const [rawStats, setRawStats] = useState<PlatformStats | null>(null);
   const [publishedNotes, setPublishedNotes] = useState<NoteResource[]>([]);
@@ -412,11 +440,37 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const handleListenerError = useCallback(
+    (error: unknown, operationType: OperationType, path: string) => {
+      inspectQuotaError(error);
+      if (isFirestoreOfflineOrTransientError(error)) {
+        return;
+      }
+      const code = (error as { code?: string })?.code || '';
+      const msg = error instanceof Error ? error.message : String(error);
+      if (
+        code === 'permission-denied' ||
+        msg.includes('Missing or insufficient permissions')
+      ) {
+        try {
+          handleFirestoreError(error, operationType, path);
+        } catch {
+          // Structured FirestoreErrorInfo logged for diagnostics without unmounting UI
+        }
+      }
+    },
+    [inspectQuotaError]
+  );
+
+  const dismissAuthDomainError = useCallback(() => {
+    setAuthDomainErrorHost(null);
+  }, []);
+
   const navigate = useCallback((next: NavRoute) => {
     setRoute(next);
-    const nextHash = next === 'home' ? '' : `#/${next}`;
+    const nextHash = next === 'home' ? '#/' : `#/${next}`;
     if (window.location.hash !== nextHash) {
-      window.history.pushState(null, '', nextHash || window.location.pathname + window.location.search);
+      window.history.pushState(null, '', nextHash);
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
@@ -435,11 +489,11 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     try {
       const resp = await fetch('/api/rank-board');
       if (!resp.ok) return;
-      const data = (await resp.json()) as {
+      const data = await safeParseJsonResponse<{
         entries?: RankBoardEntry[];
         totalCompletedAttempts?: number;
         totalPublishedResults?: number;
-      };
+      }>(resp);
       if (Array.isArray(data.entries)) {
         setServerRankEntries(data.entries);
       }
@@ -466,7 +520,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         const t0 = Date.now();
         const res = await fetch('/api/server-time');
         if (!res.ok) return;
-        const payload = (await res.json()) as { serverTimeMs?: number };
+        const payload = await safeParseJsonResponse<{ serverTimeMs?: number }>(res);
         const t1 = Date.now();
         if (active && typeof payload.serverTimeMs === 'number') {
           const rttHalf = Math.round((t1 - t0) / 2);
@@ -494,35 +548,52 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
   }, [clockOffsetMs]);
 
   useEffect(() => {
+    let settled = false;
+    const finishBoot = () => {
+      if (!settled) {
+        settled = true;
+        setBootReady(true);
+      }
+    };
+    const guardTimer = window.setTimeout(finishBoot, 2500);
     validateFirestoreConnection().finally(() => {
-      setBootReady(true);
+      window.clearTimeout(guardTimer);
+      finishBoot();
     });
+    return () => window.clearTimeout(guardTimer);
   }, []);
 
   const verifyAdminOnServer = useCallback(
     async (): Promise<{ ok: boolean; error?: string }> => {
       const user = auth.currentUser;
-      if (!user) {
+      const savedToken = getSavedAdminSessionToken();
+      if (!user && !savedToken) {
         return { ok: false, error: 'Authenticate with an administrator account first.' };
       }
       try {
-        const idToken = await user.getIdToken();
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (user) {
+          const idToken = await user.getIdToken();
+          headers.Authorization = `Bearer ${idToken}`;
+        }
+        if (savedToken) {
+          headers['X-Admin-Session'] = savedToken;
+        }
         const resp = await fetch('/api/admin/verify', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${idToken}`,
-          },
+          headers,
           body: JSON.stringify({}),
         });
-        const data = (await resp.json()) as {
+        const data = await safeParseJsonResponse<{
           authorized?: boolean;
           adminSessionToken?: string;
           error?: string;
-        };
+        }>(resp);
         if (resp.ok && data.authorized) {
           if (data.adminSessionToken) {
-            window.sessionStorage.setItem('smart_tech_admin_session', data.adminSessionToken);
+            saveAdminSessionToken(data.adminSessionToken);
           }
           setAdminServerVerified(true);
           setIsVerifiedAdmin(true);
@@ -542,11 +613,8 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     async (
       email: string,
       password: string
-    ): Promise<{ ok: boolean; error?: string }> => {
-      const cleanEmail = email.trim().toLowerCase();
-      if (!cleanEmail) {
-        return { ok: false, error: 'Administrator email address is required.' };
-      }
+    ): Promise<{ ok: boolean; error?: string; providerDisabled?: boolean }> => {
+      const cleanEmail = (email || BOOTSTRAPPED_ADMIN_EMAIL).trim().toLowerCase();
       if (!password) {
         return { ok: false, error: 'Administrator password is required.' };
       }
@@ -557,19 +625,45 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: cleanEmail, password }),
         });
-        const data = await resp.json();
+        const data = await safeParseJsonResponse<{
+          authorized?: boolean;
+          adminSessionToken?: string;
+          email?: string;
+          error?: string;
+        }>(resp);
 
         if (resp.ok && data.authorized && data.adminSessionToken) {
-          window.sessionStorage.setItem('smart_tech_admin_session', data.adminSessionToken);
+          saveAdminSessionToken(data.adminSessionToken);
           setAdminServerVerified(true);
           setIsVerifiedAdmin(true);
-          pushToast('success', 'Admin session active', `Signed in as ${data.email || cleanEmail}`);
-          return { ok: true };
+
+          // Also attempt Firebase Email/Password sign-in if linked in Firebase Auth,
+          // unlocking full direct client-side Firestore & Storage writes on any device!
+          let providerDisabled = false;
+          if (
+            !auth.currentUser ||
+            (auth.currentUser.email || '').toLowerCase() !== BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()
+          ) {
+            try {
+              await signInWithEmailAndPassword(auth, BOOTSTRAPPED_ADMIN_EMAIL, password);
+            } catch (fbErr: unknown) {
+              const fbCode = (fbErr as { code?: string })?.code || '';
+              if (
+                fbCode === 'auth/operation-not-allowed' ||
+                fbCode === 'auth/invalid-credential' ||
+                fbCode === 'auth/user-not-found'
+              ) {
+                providerDisabled = true;
+              }
+            }
+          }
+
+          return { ok: true, providerDisabled };
         }
 
         return {
           ok: false,
-          error: data.error || 'Access Denied: Incorrect email address or password.',
+          error: data.error || 'Access Denied: Incorrect administrator password.',
         };
       } catch {
         return {
@@ -578,20 +672,75 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         };
       }
     },
-    [pushToast]
+    []
   );
 
-  // Firebase Auth listener
+  // Recover mobile/redirect Google Sign-In results on startup
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((cred) => {
+        if (cred?.user) {
+          let pendingRoute: NavRoute | null = null;
+          try {
+            const raw = window.localStorage.getItem(PENDING_AUTH_ROUTE_KEY);
+            window.localStorage.removeItem(PENDING_AUTH_ROUTE_KEY);
+            if (raw) pendingRoute = raw as NavRoute;
+          } catch {
+            // Ignore storage restriction
+          }
+          pushToast('success', 'Signed in successfully', 'Welcome back to Smart Tech.');
+          if (pendingRoute) {
+            navigate(pendingRoute);
+          }
+        }
+      })
+      .catch((err: unknown) => {
+        const code = (err as { code?: string })?.code || '';
+        if (code === 'auth/unauthorized-domain') {
+          setAuthDomainErrorHost(window.location.hostname);
+          pushToast(
+            'error',
+            'Authorize domain in Firebase Console',
+            `Add "${window.location.hostname}" to Firebase Authentication → Settings → Authorized domains.`
+          );
+        }
+      });
+  }, [navigate, pushToast]);
+
+  // Firebase Auth listener + Persistent Admin Session Restoration
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) {
         setUserProfile(null);
-        setIsVerifiedAdmin(false);
-        setAdminServerVerified(false);
         setUserActivities([]);
         setMyExamAttempts([]);
         setReadAnnouncementIds(new Set());
+
+        // Check if an active server-verified Admin Password session exists on this device
+        const savedToken = getSavedAdminSessionToken();
+        if (savedToken) {
+          try {
+            const statusResp = await fetch('/api/admin/session-status', {
+              headers: { 'X-Admin-Session': savedToken },
+            });
+            if (statusResp.ok) {
+              const statusData = await safeParseJsonResponse<{ authorized?: boolean }>(statusResp);
+              if (statusData.authorized) {
+                setIsVerifiedAdmin(true);
+                setAdminServerVerified(true);
+                setAuthReady(true);
+                return;
+              }
+            }
+          } catch {
+            // Clear stale token below if invalid
+          }
+          clearSavedAdminSessionToken();
+        }
+
+        setIsVerifiedAdmin(false);
+        setAdminServerVerified(false);
         setAuthReady(true);
         return;
       }
@@ -599,33 +748,46 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       try {
         const { profile, isVerifiedAdmin: verifiedAdmin } = await syncAuthenticatedUserProfile(user);
         setUserProfile(profile);
-        setIsVerifiedAdmin(verifiedAdmin);
+        const savedToken = getSavedAdminSessionToken();
+        const isPrimaryEmail =
+          (user.email || '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
 
-        if (verifiedAdmin) {
+        if (verifiedAdmin || isPrimaryEmail) {
           const idToken = await user.getIdToken();
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          };
+          if (savedToken) {
+            headers['X-Admin-Session'] = savedToken;
+          }
           const resp = await fetch('/api/admin/verify', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${idToken}`,
-            },
+            headers,
             body: JSON.stringify({}),
           }).catch(() => null);
-          if (resp) {
-            const payload = await resp.json().catch(() => ({}));
-            if (resp.ok && payload.authorized) {
+
+          if (resp && resp.ok) {
+            const payload = await safeParseJsonResponse<{
+              authorized?: boolean;
+              adminSessionToken?: string;
+            }>(resp).catch(() => ({ authorized: false, adminSessionToken: '' }));
+            if (payload.authorized) {
               if (payload.adminSessionToken) {
-                window.sessionStorage.setItem(
-                  'smart_tech_admin_session',
-                  String(payload.adminSessionToken)
-                );
+                saveAdminSessionToken(String(payload.adminSessionToken));
               }
+              setIsVerifiedAdmin(true);
               setAdminServerVerified(true);
             } else {
+              setIsVerifiedAdmin(false);
               setAdminServerVerified(false);
             }
+          } else {
+            setIsVerifiedAdmin(verifiedAdmin);
+            setAdminServerVerified(false);
           }
         } else {
+          setIsVerifiedAdmin(false);
           setAdminServerVerified(false);
         }
       } catch (err) {
@@ -648,6 +810,10 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    const loadingFallbackTimer = window.setTimeout(() => {
+      setDataLoading(false);
+    }, 3500);
+
     const unsubStats = onSnapshot(
       doc(db, 'stats', 'platform'),
       (snap) => {
@@ -667,7 +833,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           setRawStats(null);
         }
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.GET, 'stats/platform')
     );
 
     const unsubNotes = onSnapshot(
@@ -680,7 +846,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         markPartLoaded();
       },
       (err) => {
-        inspectQuotaError(err);
+        handleListenerError(err, OperationType.LIST, 'notes');
         markPartLoaded();
       }
     );
@@ -695,7 +861,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         markPartLoaded();
       },
       (err) => {
-        inspectQuotaError(err);
+        handleListenerError(err, OperationType.LIST, 'papers');
         markPartLoaded();
       }
     );
@@ -710,7 +876,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         markPartLoaded();
       },
       (err) => {
-        inspectQuotaError(err);
+        handleListenerError(err, OperationType.LIST, 'exams');
         markPartLoaded();
       }
     );
@@ -725,7 +891,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         markPartLoaded();
       },
       (err) => {
-        inspectQuotaError(err);
+        handleListenerError(err, OperationType.LIST, 'announcements');
         markPartLoaded();
       }
     );
@@ -738,7 +904,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           .sort((a, b) => a.rankPosition - b.rankPosition);
         setFirestoreRankEntries(list);
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.LIST, 'rankEntries')
     );
 
     const unsubCustomBoards = onSnapshot(
@@ -749,7 +915,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
         setPublishedRankBoards(list);
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.LIST, 'rankBoards')
     );
 
     const unsubCustomEntries = onSnapshot(
@@ -764,10 +930,11 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           });
         setPublishedCustomRankEntries(list);
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.LIST, 'rankBoardEntries')
     );
 
     return () => {
+      window.clearTimeout(loadingFallbackTimer);
       unsubStats();
       unsubNotes();
       unsubPapers();
@@ -777,7 +944,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       unsubCustomBoards();
       unsubCustomEntries();
     };
-  }, [inspectQuotaError]);
+  }, [handleListenerError]);
 
   // Per-User Private Subscriptions
   useEffect(() => {
@@ -806,11 +973,10 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               createdAtMs: timestampToMs(d.createdAt),
             };
           })
-          .sort((a, b) => b.createdAtMs - a.createdAtMs)
-          .slice(0, 16);
+          .sort((a, b) => b.createdAtMs - a.createdAtMs);
         setUserActivities(items);
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.LIST, 'userActivities')
     );
 
     const unsubAttempts = onSnapshot(
@@ -821,7 +987,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           .sort((a, b) => b.submittedAtMs - a.submittedAtMs);
         setMyExamAttempts(items);
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.LIST, 'examAttempts')
     );
 
     const unsubReads = onSnapshot(
@@ -834,7 +1000,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         });
         setReadAnnouncementIds(ids);
       },
-      (err) => inspectQuotaError(err)
+      (err) => handleListenerError(err, OperationType.LIST, 'announcementReads')
     );
 
     return () => {
@@ -842,11 +1008,11 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       unsubAttempts();
       unsubReads();
     };
-  }, [authReady, firebaseUser, userProfile, inspectQuotaError]);
+  }, [authReady, firebaseUser, userProfile, handleListenerError]);
 
   // Verified Administrator Subscriptions
   useEffect(() => {
-    if (!authReady || !firebaseUser || !isVerifiedAdmin || !adminServerVerified) {
+    if (!authReady || !isVerifiedAdmin || !adminServerVerified) {
       setAllNotes([]);
       setAllPapers([]);
       setAllExams([]);
@@ -858,6 +1024,19 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       setAllUsers([]);
       setAllAdmins([]);
       setAuditLogs([]);
+      return;
+    }
+
+    // If logged in via Admin Password on a device before Firebase Auth is linked,
+    // mirror live published collections so the Admin Dashboard displays current resources immediately.
+    if (!firebaseUser) {
+      setAllNotes(publishedNotes);
+      setAllPapers(publishedPapers);
+      setAllExams(publishedExams);
+      setAllAnnouncements(publishedAnnouncements);
+      setAllRankEntries(firestoreRankEntries);
+      setAllRankBoards(publishedRankBoards);
+      setAllCustomRankEntries(publishedCustomRankEntries);
       return;
     }
 
@@ -899,7 +1078,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               .sort((a, b) => b.createdAtMs - a.createdAtMs)
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'notes')
       )
     );
 
@@ -913,7 +1092,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               .sort((a, b) => b.createdAtMs - a.createdAtMs)
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'papers')
       )
     );
 
@@ -927,7 +1106,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               .sort((a, b) => b.createdAtMs - a.createdAtMs)
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'exams')
       )
     );
 
@@ -941,7 +1120,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               .sort((a, b) => b.createdAtMs - a.createdAtMs)
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'announcements')
       )
     );
 
@@ -955,7 +1134,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               .sort((a, b) => a.rankPosition - b.rankPosition)
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'rankEntries')
       )
     );
 
@@ -969,7 +1148,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'rankBoards')
       )
     );
 
@@ -987,7 +1166,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               })
           );
         },
-        (err) => inspectQuotaError(err)
+        (err) => handleListenerError(err, OperationType.LIST, 'rankBoardEntries')
       )
     );
 
@@ -1002,7 +1181,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
                 .sort((a, b) => b.submittedAtMs - a.submittedAtMs)
             );
           },
-          (err) => inspectQuotaError(err)
+          (err) => handleListenerError(err, OperationType.LIST, 'examAttempts')
         )
       );
 
@@ -1029,7 +1208,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
                 .sort((a, b) => b.lastLoginAtMs - a.lastLoginAtMs)
             );
           },
-          (err) => inspectQuotaError(err)
+          (err) => handleListenerError(err, OperationType.LIST, 'users')
         )
       );
 
@@ -1049,7 +1228,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
               })
             );
           },
-          (err) => inspectQuotaError(err)
+          (err) => handleListenerError(err, OperationType.LIST, 'admins')
         )
       );
 
@@ -1076,7 +1255,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
                 .slice(0, 80)
             );
           },
-          (err) => inspectQuotaError(err)
+          (err) => handleListenerError(err, OperationType.LIST, 'auditLogs')
         )
       );
     }
@@ -1084,12 +1263,60 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unsubs.forEach((fn) => fn());
     };
-  }, [authReady, firebaseUser, isVerifiedAdmin, adminServerVerified, inspectQuotaError]);
+  }, [
+    authReady,
+    firebaseUser,
+    isVerifiedAdmin,
+    adminServerVerified,
+    handleListenerError,
+    publishedNotes,
+    publishedPapers,
+    publishedExams,
+    publishedAnnouncements,
+    firestoreRankEntries,
+    publishedRankBoards,
+    publishedCustomRankEntries,
+  ]);
 
   const signInWithGoogle = useCallback(
     async (redirectRoute?: NavRoute) => {
+      setAuthDomainErrorHost(null);
+      const targetRoute: NavRoute =
+        redirectRoute ||
+        (route === 'online-papers' || route === 'admin' ? route : 'dashboard');
+
+      try {
+        window.localStorage.setItem(PENDING_AUTH_ROUTE_KEY, targetRoute);
+      } catch {
+        // Ignore storage restriction
+      }
+
+      // Embedded in-app social webviews block window.open popups; use redirect flow directly
+      if (isEmbeddedInAppBrowser()) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirErr: unknown) {
+          const rCode = (redirErr as { code?: string })?.code || '';
+          if (rCode === 'auth/unauthorized-domain') {
+            setAuthDomainErrorHost(window.location.hostname);
+            pushToast(
+              'error',
+              'Netlify domain not authorized yet in Firebase',
+              `Add "${window.location.hostname}" in Firebase Console → Authentication → Settings → Authorized domains.`
+            );
+            return;
+          }
+        }
+      }
+
       try {
         await signInWithPopup(auth, googleProvider);
+        try {
+          window.localStorage.removeItem(PENDING_AUTH_ROUTE_KEY);
+        } catch {
+          // Ignore
+        }
         pushToast(
           'success',
           'Signed in successfully',
@@ -1108,11 +1335,46 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
           pushToast('info', 'Sign-in cancelled', 'You can continue browsing public resources anytime.');
           return;
         }
+        if (code === 'auth/unauthorized-domain') {
+          setAuthDomainErrorHost(window.location.hostname);
+          pushToast(
+            'error',
+            'Authorize domain in Firebase Console',
+            `Add "${window.location.hostname}" under Firebase Authentication → Settings → Authorized domains.`
+          );
+          return;
+        }
+        if (
+          code === 'auth/popup-blocked' ||
+          code === 'auth/operation-not-supported-in-this-environment' ||
+          code === 'auth/web-storage-unsupported'
+        ) {
+          try {
+            pushToast('info', 'Redirecting to Google Sign-In', 'Opening browser-compatible login...');
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          } catch (fallbackErr: unknown) {
+            const fbCode = (fallbackErr as { code?: string })?.code || '';
+            if (fbCode === 'auth/unauthorized-domain') {
+              setAuthDomainErrorHost(window.location.hostname);
+              pushToast(
+                'error',
+                'Authorize domain in Firebase Console',
+                `Add "${window.location.hostname}" under Firebase Authentication → Settings → Authorized domains.`
+              );
+              return;
+            }
+          }
+        }
         if (code === 'auth/network-request-failed') {
           pushToast('error', 'Network connection issue', 'Check your internet connection and retry.');
           return;
         }
-        pushToast('error', 'Google Sign-In could not complete', 'Please allow popups and try again.');
+        pushToast(
+          'error',
+          'Google Sign-In could not complete',
+          'Check browser popup permissions or verify Authorized Domains in Setup Guide.'
+        );
       }
     },
     [navigate, pushToast, route]
@@ -1120,15 +1382,17 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
 
   const signOutUser = useCallback(async () => {
     try {
-      const sessionToken = window.sessionStorage.getItem('smart_tech_admin_session') || '';
+      const sessionToken = getSavedAdminSessionToken();
       if (sessionToken) {
         await fetch('/api/admin/logout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ adminSessionToken: sessionToken }),
         }).catch(() => undefined);
-        window.sessionStorage.removeItem('smart_tech_admin_session');
+        clearSavedAdminSessionToken();
       }
+      setIsVerifiedAdmin(false);
+      setAdminServerVerified(false);
       await signOut(auth);
       pushToast('info', 'Signed out securely', 'Your session has been closed.');
       navigate('home');
@@ -1139,15 +1403,16 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
 
   const logoutAdminSession = useCallback(async () => {
     try {
-      const sessionToken = window.sessionStorage.getItem('smart_tech_admin_session') || '';
+      const sessionToken = getSavedAdminSessionToken();
       if (sessionToken) {
         await fetch('/api/admin/logout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ adminSessionToken: sessionToken }),
         }).catch(() => undefined);
-        window.sessionStorage.removeItem('smart_tech_admin_session');
+        clearSavedAdminSessionToken();
       }
+      setIsVerifiedAdmin(false);
       setAdminServerVerified(false);
       await signOut(auth);
       pushToast('info', 'Administrator logged out', 'Your privileged session has been closed.');
@@ -1242,6 +1507,8 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     refreshProfileState,
     dataLoading,
     quotaErrorUrl,
+    authDomainErrorHost,
+    dismissAuthDomainError,
     stats,
     publishedNotes,
     publishedPapers,

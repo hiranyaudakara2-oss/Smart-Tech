@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildNoteBookmarkId,
   calculateStudentLearningProgress,
   computeCompetitionRankings,
   computeManualBoardRankings,
+  deriveBookmarkedLibraryNotes,
   evaluateCodeRateLimit,
   evaluateExamStatus,
   extractGoogleDriveFileId,
@@ -35,6 +37,7 @@ import type {
   ExamAttempt,
   ExamPaper,
   ExamQuestionFull,
+  NoteBookmark,
   NoteResource,
   OnlineExam,
   UserActivity,
@@ -923,6 +926,83 @@ test('Student learning progress indicator calculates notes, exams, overall perce
   assert.equal(ictProgress.overallCompleted, 1);
   assert.equal(ictProgress.overallTotal, 2);
   assert.equal(ictProgress.overallPercentage, 50);
+});
+
+test('My Library bookmark helpers sanitize deterministic IDs, sort most recently saved first, and exclude unpublished/deleted notes', () => {
+  const safeId = buildNoteBookmarkId('user/123', 'note:abc-99');
+  assert.equal(isValidDocumentId(safeId), true);
+  assert.equal(safeId, 'user_123_note_abc-99');
+
+  const catalogNotes: NoteResource[] = [
+    {
+      id: 'n_older',
+      title: 'Boolean Algebra Foundations',
+      subject: 'ICT',
+      grade: 'Grade 12',
+      description: 'Core laws of Boolean logic',
+      tags: ['Logic'],
+      pdfUrl: '/api/curriculum-pdf/bool.pdf',
+      storagePath: '',
+      fileName: 'bool.pdf',
+      fileSize: 120000,
+      thumbnailUrl: '',
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+    },
+    {
+      id: 'n_newer',
+      title: 'Fluid Mechanics & Hydraulics',
+      subject: 'Engineering Technology',
+      grade: 'Grade 13',
+      description: 'Pascal principle and actuators',
+      tags: ['Hydraulics'],
+      pdfUrl: '/api/curriculum-pdf/fluid.pdf',
+      storagePath: '',
+      fileName: 'fluid.pdf',
+      fileSize: 240000,
+      thumbnailUrl: '',
+      published: true,
+      authorId: 'admin1',
+      createdAtMs: 2000,
+      updatedAtMs: 2000,
+    },
+    {
+      id: 'n_unpublished',
+      title: 'Hidden Draft Module',
+      subject: 'Biosystems Technology',
+      grade: 'Grade 13',
+      description: 'Unpublished draft',
+      tags: [],
+      pdfUrl: '/api/curriculum-pdf/draft.pdf',
+      storagePath: '',
+      fileName: 'draft.pdf',
+      fileSize: 90000,
+      thumbnailUrl: '',
+      published: false,
+      authorId: 'admin1',
+      createdAtMs: 3000,
+      updatedAtMs: 3000,
+    },
+  ];
+
+  const bookmarks: NoteBookmark[] = [
+    { id: 'u1_n_older', userId: 'u1', noteId: 'n_older', createdAtMs: 5000 },
+    { id: 'u1_n_newer', userId: 'u1', noteId: 'n_newer', createdAtMs: 9000 },
+    { id: 'u1_n_unpublished', userId: 'u1', noteId: 'n_unpublished', createdAtMs: 12000 },
+    { id: 'u1_n_deleted', userId: 'u1', noteId: 'n_deleted', createdAtMs: 15000 },
+  ];
+
+  const library = deriveBookmarkedLibraryNotes(catalogNotes, bookmarks);
+  assert.equal(library.length, 2);
+  assert.deepEqual(
+    library.map((item) => ({ id: item.note.id, savedAtMs: item.savedAtMs })),
+    [
+      { id: 'n_newer', savedAtMs: 9000 },
+      { id: 'n_older', savedAtMs: 5000 },
+    ]
+  );
 });
 
 

@@ -309,6 +309,30 @@
       },
       "required": ["userId", "announcementId", "readAt"]
     },
+    "NoteBookmark": {
+      "title": "NoteBookmark",
+      "description": "Authenticated user bookmark saving an educational note to their personalized My Library dashboard section.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "noteId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "noteId", "createdAt"]
+    },
     "AuditLog": {
       "title": "AuditLog",
       "description": "Immutable record of privileged administrative actions.",
@@ -436,6 +460,10 @@
     "/rankBoardEntries/{entryId}": {
       "schema": { "$ref": "#/entities/CustomRankEntry" },
       "description": "Dynamic Rank Board entries; entries on published boards are publicly readable without PII, writes restricted to administrators."
+    },
+    "/noteBookmarks/{bookmarkId}": {
+      "schema": { "$ref": "#/entities/NoteBookmark" },
+      "description": "Authenticated user educational note bookmarks isolated per user for the My Library dashboard."
     }
   }
 }

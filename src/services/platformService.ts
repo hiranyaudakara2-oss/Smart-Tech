@@ -43,6 +43,7 @@ import type {
   UserProfile,
 } from '../types/platform';
 import {
+  buildNoteBookmarkId,
   computeCompetitionRankings,
   computeManualBoardRankings,
   generateRandomSixDigitCode,
@@ -453,6 +454,55 @@ export async function markAnnouncementAsRead(
   } catch (error) {
     if (!isFirestoreOfflineOrTransientError(error)) {
       handleFirestoreError(error, OperationType.WRITE, `announcementReads/${readId}`);
+    }
+  }
+}
+
+export async function saveNoteBookmark(userId: string, noteId: string): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.uid !== userId) {
+    throw new Error('Sign in with your account to save educational notes to My Library.');
+  }
+  if (!currentUser.emailVerified) {
+    throw new Error('Verify your email address before saving notes to My Library.');
+  }
+  const cleanNoteId = noteId.trim().slice(0, 128);
+  if (!cleanNoteId) {
+    throw new Error('Invalid educational note identifier.');
+  }
+  await ensureUserProfileDocumentSynced(userId);
+  const bookmarkId = buildNoteBookmarkId(userId, cleanNoteId);
+  try {
+    await setDoc(doc(db, 'noteBookmarks', bookmarkId), {
+      userId,
+      noteId: cleanNoteId,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    if (!isFirestoreOfflineOrTransientError(error)) {
+      handleFirestoreError(error, OperationType.WRITE, `noteBookmarks/${bookmarkId}`);
+    }
+  }
+}
+
+export async function removeNoteBookmark(userId: string, noteId: string): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.uid !== userId) {
+    throw new Error('Sign in with your account to manage My Library bookmarks.');
+  }
+  if (!currentUser.emailVerified) {
+    throw new Error('Verify your email address before updating My Library bookmarks.');
+  }
+  const cleanNoteId = noteId.trim().slice(0, 128);
+  if (!cleanNoteId) {
+    return;
+  }
+  const bookmarkId = buildNoteBookmarkId(userId, cleanNoteId);
+  try {
+    await deleteDoc(doc(db, 'noteBookmarks', bookmarkId));
+  } catch (error) {
+    if (!isFirestoreOfflineOrTransientError(error)) {
+      handleFirestoreError(error, OperationType.DELETE, `noteBookmarks/${bookmarkId}`);
     }
   }
 }

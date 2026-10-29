@@ -5,6 +5,7 @@ import type {
   ExamPaper,
   ExamQuestionFull,
   ExamQuestionPublic,
+  NoteBookmark,
   NoteResource,
   OnlineExam,
   QuestionGradingBreakdown,
@@ -1386,6 +1387,45 @@ export function calculateStudentLearningProgress(params: {
     noteItems,
     examItems,
   };
+}
+
+export interface BookmarkedLibraryNoteItem {
+  note: NoteResource;
+  savedAtMs: number;
+}
+
+export function buildNoteBookmarkId(userId: string, noteId: string): string {
+  return `${userId}_${noteId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+}
+
+export function deriveBookmarkedLibraryNotes(
+  publishedNotes: NoteResource[],
+  bookmarks: NoteBookmark[]
+): BookmarkedLibraryNoteItem[] {
+  const savedAtByNoteId = new Map<string, number>();
+  for (const bm of bookmarks) {
+    if (!bm.noteId) continue;
+    const prev = savedAtByNoteId.get(bm.noteId);
+    if (prev === undefined || bm.createdAtMs >= prev) {
+      savedAtByNoteId.set(bm.noteId, bm.createdAtMs);
+    }
+  }
+
+  const items: BookmarkedLibraryNoteItem[] = [];
+  for (const note of publishedNotes) {
+    if (note.published === false) continue;
+    const savedAtMs = savedAtByNoteId.get(note.id);
+    if (savedAtMs !== undefined) {
+      items.push({ note, savedAtMs });
+    }
+  }
+
+  return items.sort((a, b) => {
+    if (b.savedAtMs !== a.savedAtMs) {
+      return b.savedAtMs - a.savedAtMs;
+    }
+    return a.note.title.localeCompare(b.note.title);
+  });
 }
 
 

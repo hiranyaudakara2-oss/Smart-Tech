@@ -21,11 +21,17 @@ import {
   OperationType,
   validateFirestoreConnection,
 } from '../lib/firebase';
-import { safeParseJsonResponse } from '../utils/platformLogic';
+import {
+  deriveBookmarkedLibraryNotes,
+  safeParseJsonResponse,
+  type BookmarkedLibraryNoteItem,
+} from '../utils/platformLogic';
 import {
   clearSavedAdminSessionToken,
   getSavedAdminSessionToken,
+  removeNoteBookmark,
   saveAdminSessionToken,
+  saveNoteBookmark,
   syncAuthenticatedUserProfile,
   timestampToMs,
 } from '../services/platformService';
@@ -39,6 +45,7 @@ import type {
   ExamPaper,
   ExamQuestionPublic,
   NavRoute,
+  NoteBookmark,
   NoteResource,
   OnlineExam,
   PlatformStats,
@@ -90,6 +97,11 @@ interface PlatformContextValue {
   myExamAttempts: ExamAttempt[];
   readAnnouncementIds: Set<string>;
   unreadAnnouncementsCount: number;
+  noteBookmarks: NoteBookmark[];
+  bookmarkedNoteIds: Set<string>;
+  bookmarkedLibraryItems: BookmarkedLibraryNoteItem[];
+  pendingBookmarkIds: Set<string>;
+  toggleNoteBookmark: (note: NoteResource) => Promise<void>;
 
   // Admin-only full collections
   allNotes: NoteResource[];
@@ -399,6 +411,8 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
   const [userActivities, setUserActivities] = useState<UserActivity[]>([]);
   const [myExamAttempts, setMyExamAttempts] = useState<ExamAttempt[]>([]);
   const [readAnnouncementIds, setReadAnnouncementIds] = useState<Set<string>>(new Set());
+  const [noteBookmarks, setNoteBookmarks] = useState<NoteBookmark[]>([]);
+  const [pendingBookmarkIds, setPendingBookmarkIds] = useState<Set<string>>(new Set());
 
   const [allNotes, setAllNotes] = useState<NoteResource[]>([]);
   const [allPapers, setAllPapers] = useState<ExamPaper[]>([]);
@@ -716,6 +730,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         setUserActivities([]);
         setMyExamAttempts([]);
         setReadAnnouncementIds(new Set());
+        setNoteBookmarks([]);
 
         // Check if an active server-verified Admin Password session exists on this device
         const savedToken = getSavedAdminSessionToken();
@@ -952,6 +967,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       setUserActivities([]);
       setMyExamAttempts([]);
       setReadAnnouncementIds(new Set());
+      setNoteBookmarks([]);
       return;
     }
 
@@ -1003,10 +1019,33 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
       (err) => handleListenerError(err, OperationType.LIST, 'announcementReads')
     );
 
+    const unsubBookmarks = firebaseUser.emailVerified
+      ? onSnapshot(
+          query(collection(db, 'noteBookmarks'), where('userId', '==', uid)),
+          (snap) => {
+            const items: NoteBookmark[] = snap.docs
+              .map((docSnap) => {
+                const d = docSnap.data();
+                return {
+                  id: docSnap.id,
+                  userId: String(d.userId || uid),
+                  noteId: String(d.noteId || ''),
+                  createdAtMs: timestampToMs(d.createdAt),
+                };
+              })
+              .filter((b) => Boolean(b.noteId))
+              .sort((a, b) => b.createdAtMs - a.createdAtMs);
+            setNoteBookmarks(items);
+          },
+          (err) => handleListenerError(err, OperationType.LIST, 'noteBookmarks')
+        )
+      : () => undefined;
+
     return () => {
       unsubAct();
       unsubAttempts();
       unsubReads();
+      unsubBookmarks();
     };
   }, [authReady, firebaseUser, userProfile, handleListenerError]);
 
@@ -1490,6 +1529,70 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     return publishedAnnouncements.filter((a) => !readAnnouncementIds.has(a.id)).length;
   }, [firebaseUser, publishedAnnouncements, readAnnouncementIds]);
 
+  const bookmarkedNoteIds = useMemo(() => {
+    return new Set(noteBookmarks.map((b) => b.noteId));
+  }, [noteBookmarks]);
+
+  const bookmarkedLibraryItems = useMemo(() => {
+    return deriveBookmarkedLibraryNotes(publishedNotes, noteBookmarks);
+  }, [publishedNotes, noteBookmarks]);
+
+  const toggleNoteBookmark = useCallback(
+    async (note: NoteResource) => {
+      if (!firebaseUser) {
+        pushToast(
+          'info',
+          'Sign in to bookmark notes',
+          'Sign in with Google to save educational notes to My Library.'
+        );
+        await signInWithGoogle(route === 'dashboard' ? 'dashboard' : 'notes');
+        return;
+      }
+
+      if (pendingBookmarkIds.has(note.id)) {
+        return;
+      }
+
+      setPendingBookmarkIds((prev) => {
+        const next = new Set(prev);
+        next.add(note.id);
+        return next;
+      });
+
+      const isCurrentlySaved = bookmarkedNoteIds.has(note.id);
+      try {
+        if (isCurrentlySaved) {
+          await removeNoteBookmark(firebaseUser.uid, note.id);
+          pushToast(
+            'info',
+            'Removed from My Library',
+            `"${note.title}" was removed from your saved library.`
+          );
+        } else {
+          await saveNoteBookmark(firebaseUser.uid, note.id);
+          pushToast(
+            'success',
+            'Saved to My Library',
+            `"${note.title}" is now pinned in your dashboard library.`
+          );
+        }
+      } catch (err) {
+        pushToast(
+          'error',
+          'Unable to update bookmark',
+          err instanceof Error ? err.message : 'Please check your connection and try again.'
+        );
+      } finally {
+        setPendingBookmarkIds((prev) => {
+          const next = new Set(prev);
+          next.delete(note.id);
+          return next;
+        });
+      }
+    },
+    [firebaseUser, pendingBookmarkIds, bookmarkedNoteIds, pushToast, signInWithGoogle, route]
+  );
+
   const value: PlatformContextValue = {
     route,
     navigate,
@@ -1522,6 +1625,11 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     myExamAttempts,
     readAnnouncementIds,
     unreadAnnouncementsCount,
+    noteBookmarks,
+    bookmarkedNoteIds,
+    bookmarkedLibraryItems,
+    pendingBookmarkIds,
+    toggleNoteBookmark,
     allNotes,
     allPapers,
     allExams,

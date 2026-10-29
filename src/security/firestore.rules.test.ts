@@ -26,6 +26,7 @@ interface SimContext {
   existingDocs: Set<string>;
   afterDocs: Set<string>;
   examsById: Map<string, { published: boolean; opensAtMs: number; closesAtMs: number }>;
+  notesById?: Map<string, { published: boolean }>;
 }
 
 const VALID_ID = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -268,6 +269,60 @@ function simulatePermission(
     }
   }
 
+  if (op.collection === 'noteBookmarks') {
+    if (op.method === 'get') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      if (!op.existing) return 'ALLOW';
+      return op.existing.userId === ctx.auth!.uid ? 'ALLOW' : 'PERMISSION_DENIED';
+    }
+    if (op.method === 'create') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      const d = op.data || {};
+      const keys = Object.keys(d);
+      if (keys.length !== 3) return 'PERMISSION_DENIED';
+      for (const k of keys) {
+        if (k !== 'userId' && k !== 'noteId' && k !== 'createdAt') {
+          return 'PERMISSION_DENIED';
+        }
+      }
+      const userId = String(d.userId || '');
+      const noteId = String(d.noteId || '');
+      if (!VALID_ID.test(userId) || !VALID_ID.test(noteId)) return 'PERMISSION_DENIED';
+      if (userId !== ctx.auth!.uid) return 'PERMISSION_DENIED';
+      if (d.createdAt !== ctx.serverTimeMs) return 'PERMISSION_DENIED';
+      if (!ctx.existingDocs.has(`/users/${userId}`)) return 'PERMISSION_DENIED';
+      if (!ctx.existingDocs.has(`/notes/${noteId}`)) return 'PERMISSION_DENIED';
+      const noteMeta = ctx.notesById?.get(noteId);
+      if (!isAdmin(ctx) && (!noteMeta || noteMeta.published !== true)) {
+        return 'PERMISSION_DENIED';
+      }
+      return 'ALLOW';
+    }
+    if (op.method === 'update') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      const d = op.data || {};
+      const ex = op.existing || {};
+      const keys = Object.keys(d);
+      if (keys.length !== 3) return 'PERMISSION_DENIED';
+      for (const k of keys) {
+        if (k !== 'userId' && k !== 'noteId' && k !== 'createdAt') {
+          return 'PERMISSION_DENIED';
+        }
+      }
+      if (d.userId !== ex.userId || d.noteId !== ex.noteId) {
+        return 'PERMISSION_DENIED';
+      }
+      if (d.userId !== ctx.auth!.uid) return 'PERMISSION_DENIED';
+      if (d.createdAt !== ctx.serverTimeMs) return 'PERMISSION_DENIED';
+      return 'ALLOW';
+    }
+    if (op.method === 'delete') {
+      if (!isVerifiedUser(ctx.auth)) return 'PERMISSION_DENIED';
+      if (!op.existing) return 'PERMISSION_DENIED';
+      return op.existing.userId === ctx.auth!.uid ? 'ALLOW' : 'PERMISSION_DENIED';
+    }
+  }
+
   if (op.collection === 'auditLogs' && (op.method === 'update' || op.method === 'delete')) {
     return 'PERMISSION_DENIED';
   }
@@ -275,11 +330,11 @@ function simulatePermission(
   return 'PERMISSION_DENIED';
 }
 
-test('Every 16 blueprint collections have explicit match blocks, update helpers, and zero get/exists in allow list', () => {
+test('Every 17 blueprint collections have explicit match blocks, update helpers, and zero get/exists in allow list', () => {
   assert.match(rulesSource, /match \/\{document=\*\*\} \{\s*allow read, write: if false;\s*\}/);
 
   const blueprintPaths = Object.keys(blueprint.firestore);
-  assert.equal(blueprintPaths.length, 16);
+  assert.equal(blueprintPaths.length, 17);
 
   for (const collectionPath of blueprintPaths) {
     assert.ok(
@@ -292,7 +347,7 @@ test('Every 16 blueprint collections have explicit match blocks, update helpers,
   const listLines = rulesSource
     .split('\n')
     .filter((line) => line.trim().startsWith('allow list:'));
-  assert.ok(listLines.length >= 16);
+  assert.ok(listLines.length >= 17);
   for (const line of listLines) {
     assert.equal(
       line.includes('get(') || line.includes('exists('),
@@ -728,6 +783,161 @@ test('announcementReads allows non-existent get, verified owner create, and idem
       studentCtx
     ),
     'PERMISSION_DENIED'
+  );
+});
+
+test('noteBookmarks enforces owner isolation, published note existence, and blocks ghost-field/cross-user/timestamp attacks', () => {
+  const SERVER_TIME = 1_730_000_000_000;
+  const studentCtx: SimContext = {
+    auth: {
+      uid: 'student_lib_1',
+      email: 'student1@example.com',
+      emailVerified: true,
+    },
+    serverTimeMs: SERVER_TIME,
+    existingDocs: new Set([
+      '/users/student_lib_1',
+      '/notes/note_pub_1',
+      '/notes/note_draft_1',
+    ]),
+    afterDocs: new Set(),
+    examsById: new Map(),
+    notesById: new Map([
+      ['note_pub_1', { published: true }],
+      ['note_draft_1', { published: false }],
+    ]),
+  };
+
+  const bookmarkDocId = 'student_lib_1_note_pub_1';
+
+  // 1. Verified owner can bookmark an existing published note
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'create',
+        collection: 'noteBookmarks',
+        docId: bookmarkDocId,
+        data: {
+          userId: 'student_lib_1',
+          noteId: 'note_pub_1',
+          createdAt: SERVER_TIME,
+        },
+      },
+      studentCtx
+    ),
+    'ALLOW'
+  );
+
+  // 2. Bookmarking an unpublished draft note or non-existent note is DENIED for students
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'create',
+        collection: 'noteBookmarks',
+        docId: 'student_lib_1_note_draft_1',
+        data: {
+          userId: 'student_lib_1',
+          noteId: 'note_draft_1',
+          createdAt: SERVER_TIME,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'create',
+        collection: 'noteBookmarks',
+        docId: 'student_lib_1_missing_note',
+        data: {
+          userId: 'student_lib_1',
+          noteId: 'missing_note',
+          createdAt: SERVER_TIME,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  // 3. Cross-user bookmark read, create, and delete are strictly DENIED
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'get',
+        collection: 'noteBookmarks',
+        docId: 'other_student_note_pub_1',
+        existing: {
+          userId: 'other_student',
+          noteId: 'note_pub_1',
+          createdAt: SERVER_TIME - 1000,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'delete',
+        collection: 'noteBookmarks',
+        docId: 'other_student_note_pub_1',
+        existing: {
+          userId: 'other_student',
+          noteId: 'note_pub_1',
+          createdAt: SERVER_TIME - 1000,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  // 4. Shadow field injection & forged timestamp on update are DENIED
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'update',
+        collection: 'noteBookmarks',
+        docId: bookmarkDocId,
+        existing: {
+          userId: 'student_lib_1',
+          noteId: 'note_pub_1',
+          createdAt: SERVER_TIME - 5000,
+        },
+        data: {
+          userId: 'student_lib_1',
+          noteId: 'note_pub_1',
+          createdAt: SERVER_TIME,
+          isVerified: true,
+        },
+      },
+      studentCtx
+    ),
+    'PERMISSION_DENIED'
+  );
+
+  // 5. Owner can cleanly remove their own bookmark
+  assert.equal(
+    simulatePermission(
+      {
+        method: 'delete',
+        collection: 'noteBookmarks',
+        docId: bookmarkDocId,
+        existing: {
+          userId: 'student_lib_1',
+          noteId: 'note_pub_1',
+          createdAt: SERVER_TIME - 5000,
+        },
+      },
+      studentCtx
+    ),
+    'ALLOW'
   );
 });
 

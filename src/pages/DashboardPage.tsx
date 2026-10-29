@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { usePlatform } from '../context/PlatformContext';
 import {
   Award,
+  Bookmark,
   BookOpen,
   CheckCircle2,
   Circle,
@@ -13,6 +14,7 @@ import {
   Loader2,
   Monitor,
   Play,
+  Search,
   Trophy,
   User,
   X,
@@ -21,8 +23,10 @@ import type { NoteResource } from '../types/platform';
 import {
   calculateStudentLearningProgress,
   evaluateExamSchedule,
+  formatBytes,
   formatShortDate,
   getResourceTargetUrl,
+  isGoogleDriveResource,
   resolveResourcePreviewUrl,
   triggerCrossBrowserResourceDownload,
 } from '../utils/platformLogic';
@@ -42,6 +46,10 @@ export function DashboardPage() {
     publishedExams,
     myExamAttempts,
     userActivities,
+    bookmarkedNoteIds,
+    bookmarkedLibraryItems,
+    pendingBookmarkIds,
+    toggleNoteBookmark,
     dataLoading,
     serverNowMs,
     signInWithGoogle,
@@ -52,6 +60,8 @@ export function DashboardPage() {
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<TaskCategoryFilter>('all');
+  const [librarySearch, setLibrarySearch] = useState<string>('');
+  const [librarySubjectFilter, setLibrarySubjectFilter] = useState<string>('all');
   const [togglingNoteId, setTogglingNoteId] = useState<string | null>(null);
   const [downloadingNoteId, setDownloadingNoteId] = useState<string | null>(null);
   const [activePreviewNote, setActivePreviewNote] = useState<NoteResource | null>(null);
@@ -83,6 +93,50 @@ export function DashboardPage() {
       }),
     [publishedNotes, publishedExams, myExamAttempts, userActivities, effectiveSubjectFilter]
   );
+
+  // Track global note completion across all subjects so My Library always reflects accurate study state
+  const completedNoteIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const act of userActivities) {
+      if (
+        act.resourceType === 'note' &&
+        (act.action === 'viewed' || act.action === 'downloaded') &&
+        act.resourceId
+      ) {
+        set.add(act.resourceId);
+      }
+    }
+    return set;
+  }, [userActivities]);
+
+  const librarySubjects = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of bookmarkedLibraryItems) {
+      if (item.note.subject) set.add(item.note.subject);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [bookmarkedLibraryItems]);
+
+  const effectiveLibrarySubject =
+    librarySubjectFilter !== 'all' && !librarySubjects.includes(librarySubjectFilter)
+      ? 'all'
+      : librarySubjectFilter;
+
+  const filteredLibraryItems = useMemo(() => {
+    const q = librarySearch.trim().toLowerCase();
+    return bookmarkedLibraryItems.filter(({ note }) => {
+      if (effectiveLibrarySubject !== 'all' && note.subject !== effectiveLibrarySubject) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        note.title.toLowerCase().includes(q) ||
+        note.subject.toLowerCase().includes(q) ||
+        note.description.toLowerCase().includes(q) ||
+        note.tags.some((t) => t.toLowerCase().includes(q))
+      );
+    });
+  }, [bookmarkedLibraryItems, effectiveLibrarySubject, librarySearch]);
 
   const filteredTasks = useMemo(() => {
     type UnifiedTask =
@@ -163,13 +217,13 @@ export function DashboardPage() {
         <User className="mx-auto h-12 w-12 text-slate-500" />
         <h2 className="text-2xl font-bold text-white">Sign In to View Your Learning Dashboard</h2>
         <p className="text-slate-400 text-sm max-w-md mx-auto">
-          Sign in with your Google account to track completion of assigned educational notes, online examination tasks, marks, and rank board progress.
+          Sign in with your Google account to access your personalized My Library bookmarks, track completion of assigned educational notes and online examination tasks, and review marks.
         </p>
         <div>
           <button
             type="button"
             onClick={() => signInWithGoogle('dashboard')}
-            className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0"
           >
             <User className="h-4 w-4" />
             <span>Continue with Google</span>
@@ -265,6 +319,10 @@ export function DashboardPage() {
 
   const previewUrl = activePreviewNote ? resolveResourcePreviewUrl(activePreviewNote) : '';
   const directTargetUrl = activePreviewNote ? getResourceTargetUrl(activePreviewNote) : '';
+  const activePreviewSaved = activePreviewNote ? bookmarkedNoteIds.has(activePreviewNote.id) : false;
+  const activePreviewBookmarkBusy = activePreviewNote
+    ? pendingBookmarkIds.has(activePreviewNote.id)
+    : false;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
@@ -285,7 +343,7 @@ export function DashboardPage() {
           <button
             type="button"
             onClick={() => navigate('notes')}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-2.5 text-xs font-semibold text-slate-200 hover:border-cyan-400/50 hover:text-white transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-400/50 hover:text-white transition-colors whitespace-nowrap shrink-0"
           >
             <BookOpen className="h-4 w-4 text-cyan-400" />
             <span>Study Notes</span>
@@ -293,7 +351,7 @@ export function DashboardPage() {
           <button
             type="button"
             onClick={() => navigate('online-papers')}
-            className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0"
           >
             <Monitor className="h-4 w-4" />
             <span>Online Exams</span>
@@ -598,13 +656,235 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {/* Personalized "My Library" Bookmarked Notes Section */}
+      <section aria-labelledby="my-library-heading" className="space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+          <div className="space-y-1">
+            <h2 id="my-library-heading" className="text-xl font-bold text-white flex items-center gap-2.5">
+              <Bookmark className="h-5 w-5 text-amber-400 fill-amber-400/20 shrink-0" />
+              <span>My Library</span>
+            </h2>
+            <p className="text-xs text-slate-400 tabular-nums">
+              {bookmarkedLibraryItems.length === 0
+                ? 'Bookmark educational notes from the catalog or task list to pin them here for quick study access'
+                : `${bookmarkedLibraryItems.length} ${
+                    bookmarkedLibraryItems.length === 1 ? 'saved educational note' : 'saved educational notes'
+                  } · ${
+                    bookmarkedLibraryItems.filter(({ note }) => completedNoteIds.has(note.id)).length
+                  } completed`}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => navigate('notes')}
+            className="inline-flex min-h-[40px] items-center gap-2 self-start sm:self-auto rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-400/50 hover:text-white transition-colors whitespace-nowrap shrink-0"
+          >
+            <BookOpen className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Browse All Notes</span>
+          </button>
+        </div>
+
+        {bookmarkedLibraryItems.length === 0 ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center space-y-3">
+            <Bookmark className="mx-auto h-8 w-8 text-slate-500" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-slate-200">Your My Library shelf is empty</p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                Click the Save button on any educational note to keep your most important revision guides and technical modules one click away.
+              </p>
+            </div>
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => navigate('notes')}
+                className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-cyan-500 px-5 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0"
+              >
+                <BookOpen className="h-4 w-4" />
+                <span>Explore Educational Notes</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {(bookmarkedLibraryItems.length > 2 || librarySubjects.length > 1) && (
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="relative flex-1 max-w-sm">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={librarySearch}
+                    onChange={(e) => setLibrarySearch(e.target.value)}
+                    placeholder="Filter saved notes in My Library..."
+                    className="w-full rounded-xl border border-slate-700 bg-slate-900/80 pl-9 pr-3 py-2 text-xs text-slate-100 placeholder-slate-400 focus:border-cyan-400 focus:outline-none"
+                  />
+                </div>
+
+                {librarySubjects.length > 1 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+                    <button
+                      type="button"
+                      onClick={() => setLibrarySubjectFilter('all')}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                        effectiveLibrarySubject === 'all'
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'border border-slate-800 bg-slate-900/80 text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      All Saved
+                    </button>
+                    {librarySubjects.map((sub) => (
+                      <button
+                        key={sub}
+                        type="button"
+                        onClick={() => setLibrarySubjectFilter(sub)}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                          effectiveLibrarySubject === sub
+                            ? 'bg-cyan-500 text-slate-950'
+                            : 'border border-slate-800 bg-slate-900/80 text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        {sub}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {filteredLibraryItems.length === 0 ? (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 text-center text-xs text-slate-400">
+                No saved notes in My Library match your search.{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLibrarySearch('');
+                    setLibrarySubjectFilter('all');
+                  }}
+                  className="font-semibold text-cyan-400 underline hover:text-cyan-300 whitespace-nowrap shrink-0"
+                >
+                  Show all saved notes
+                </button>
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2">
+                {filteredLibraryItems.map(({ note, savedAtMs }) => {
+                  const isCompleted = completedNoteIds.has(note.id);
+                  const isToggling = togglingNoteId === note.id;
+                  const isDownloading = downloadingNoteId === note.id;
+                  const bookmarkBusy = pendingBookmarkIds.has(note.id);
+                  const isDrive = isGoogleDriveResource(note);
+
+                  return (
+                    <div
+                      key={note.id}
+                      className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-slate-900/80 p-5 space-y-4 hover:border-slate-700 transition-colors"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <p className="text-xs text-slate-400 tabular-nums">
+                            <span className="font-semibold text-cyan-300">{note.subject}</span>
+                            <span aria-hidden="true"> · </span>
+                            <span>{note.grade}</span>
+                            <span aria-hidden="true"> · </span>
+                            <span>Saved {formatShortDate(savedAtMs)}</span>
+                            <span aria-hidden="true"> · </span>
+                            <span className={isCompleted ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                              {isCompleted ? 'Completed' : 'Pending study'}
+                            </span>
+                          </p>
+
+                          <button
+                            type="button"
+                            disabled={bookmarkBusy}
+                            onClick={() => toggleNoteBookmark(note)}
+                            aria-label={`Remove "${note.title}" from My Library`}
+                            title="Remove from My Library"
+                            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap shrink-0 disabled:opacity-60"
+                          >
+                            {bookmarkBusy ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Bookmark className="h-3.5 w-3.5 fill-current text-amber-400" />
+                            )}
+                            <span>Saved</span>
+                          </button>
+                        </div>
+
+                        <h3 className="text-base font-bold text-white line-clamp-1">{note.title}</h3>
+                        <p className="text-xs text-slate-300 leading-relaxed line-clamp-2">
+                          {note.description}
+                        </p>
+
+                        {!isDrive && note.fileSize > 0 && (
+                          <p className="text-[11px] text-slate-400 tabular-nums">
+                            PDF · {formatBytes(note.fileSize)}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-800/80">
+                        <button
+                          type="button"
+                          onClick={() => handlePreviewNote(note, isCompleted)}
+                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:border-cyan-400/50 hover:text-white transition-colors whitespace-nowrap shrink-0"
+                        >
+                          <Eye className="h-3.5 w-3.5 text-cyan-400" />
+                          <span>Preview</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isDownloading}
+                          onClick={() => handleDownloadNote(note)}
+                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-cyan-500/15 border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
+                        >
+                          {isDownloading ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : isDrive ? (
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5" />
+                          )}
+                          <span>{isDrive ? 'Open Drive' : 'Download'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isToggling}
+                          onClick={() => handleToggleNoteCompletion(note, isCompleted)}
+                          className={`ml-auto inline-flex min-h-[38px] items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                            isCompleted
+                              ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                              : 'border border-slate-700 bg-slate-800/80 text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          {isToggling ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : isCompleted ? (
+                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Circle className="h-3.5 w-3.5 text-slate-400" />
+                          )}
+                          <span>{isCompleted ? 'Completed' : 'Mark Read'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       {/* Interactive Assigned Tasks Checklist */}
       <section className="space-y-4">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold text-white">Assigned Notes &amp; Examination Tasks</h2>
             <p className="text-xs text-slate-400 pt-0.5">
-              Preview or download study notes, mark completed modules, or launch scheduled online examinations directly.
+              Preview, bookmark to My Library, download study notes, mark completed modules, or launch scheduled online examinations directly.
             </p>
           </div>
 
@@ -707,6 +987,9 @@ export function DashboardPage() {
               if (task.kind === 'note') {
                 const isToggling = togglingNoteId === task.note.id;
                 const isDownloading = downloadingNoteId === task.note.id;
+                const isSaved = bookmarkedNoteIds.has(task.note.id);
+                const bookmarkBusy = pendingBookmarkIds.has(task.note.id);
+
                 return (
                   <div
                     key={task.id}
@@ -744,7 +1027,34 @@ export function DashboardPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0 pl-8 sm:pl-0">
+                    <div className="flex flex-wrap items-center gap-2 shrink-0 pl-8 sm:pl-0">
+                      <button
+                        type="button"
+                        disabled={bookmarkBusy}
+                        onClick={() => toggleNoteBookmark(task.note)}
+                        aria-pressed={isSaved}
+                        aria-label={
+                          isSaved
+                            ? `Remove "${task.title}" from My Library`
+                            : `Save "${task.title}" to My Library`
+                        }
+                        title={isSaved ? 'Saved in My Library' : 'Save to My Library'}
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 ${
+                          isSaved
+                            ? 'border-amber-400/35 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                            : 'border-slate-700 bg-slate-950/70 text-slate-300 hover:border-amber-400/40 hover:text-white'
+                        }`}
+                      >
+                        {bookmarkBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Bookmark
+                            className={`h-3.5 w-3.5 ${isSaved ? 'fill-current text-amber-400' : ''}`}
+                          />
+                        )}
+                        <span>{isSaved ? 'Saved' : 'Save'}</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => handlePreviewNote(task.note, task.completed)}
@@ -955,6 +1265,26 @@ export function DashboardPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={activePreviewBookmarkBusy}
+                  onClick={() => toggleNoteBookmark(activePreviewNote)}
+                  aria-pressed={activePreviewSaved}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 ${
+                    activePreviewSaved
+                      ? 'border-amber-400/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
+                      : 'border-slate-700 bg-slate-800 text-slate-200 hover:border-amber-400/40 hover:text-white'
+                  }`}
+                >
+                  {activePreviewBookmarkBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Bookmark
+                      className={`h-3.5 w-3.5 ${activePreviewSaved ? 'fill-current text-amber-400' : ''}`}
+                    />
+                  )}
+                  <span>{activePreviewSaved ? 'Saved' : 'Save'}</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => handleDownloadNote(activePreviewNote)}

@@ -220,6 +220,30 @@ export function PapersPage() {
         </div>
       )}
 
+      {/* Official Ownership & Copyright Attribution Notice */}
+      <aside
+        aria-label="Copyright Disclaimer"
+        className="rounded-xl border border-slate-800/90 bg-slate-900/50 px-5 py-4"
+      >
+        <p className="text-xs leading-relaxed text-slate-300">
+          <strong className="font-semibold text-white">Copyright Disclaimer:</strong>{' '}
+          This website is an independent educational platform. All past papers, model papers, and
+          official government documents hosted here are the sole property and copyright of the
+          Department of Examinations, Sri Lanka. We do not claim any ownership of these materials.
+          They are provided entirely free of charge to assist students in their studies. For
+          official information and updates, please visit the official website:{' '}
+          <a
+            href="https://www.doenets.lk"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-cyan-300 underline decoration-cyan-400/40 underline-offset-4 transition-colors hover:text-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-sm"
+          >
+            www.doenets.lk
+          </a>
+          .
+        </p>
+      </aside>
+
       {/* Paper Preview Modal */}
       {activePreviewPaper && (
         <div

@@ -262,6 +262,13 @@ export interface UserActivity {
   createdAtMs: number;
 }
 
+export interface NoteBookmark {
+  id: string;
+  userId: string;
+  noteId: string;
+  createdAtMs: number;
+}
+
 export interface AuditLogEntry {
   id: string;
   actorUid: string;

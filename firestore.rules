@@ -320,6 +320,15 @@ service cloud.firestore {
         data.readAt is timestamp;
     }
 
+    function isValidNoteBookmark(data) {
+      return data.keys().hasAll(['userId', 'noteId', 'createdAt']) &&
+        data.keys().hasOnly(['userId', 'noteId', 'createdAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId == request.auth.uid &&
+        data.noteId is string && data.noteId.size() >= 1 && data.noteId.size() <= 128 && data.noteId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp;
+    }
+
     function isValidAuditLog(data) {
       return data.keys().hasAll(['actorUid', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
         data.keys().hasOnly(['actorUid', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
@@ -437,7 +446,7 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // Collection Match Blocks (All 16 Blueprint Collections)
+    // Collection Match Blocks (All 17 Blueprint Collections)
     // =========================================================================
 
     // 1. /users/{userId} — PII-isolated User Profiles
@@ -977,6 +986,38 @@ service cloud.firestore {
         );
 
       allow delete: if isValidId(entryId) && isAdmin();
+    }
+
+    // 17. /noteBookmarks/{bookmarkId} — Per-User Saved Educational Notes ('My Library')
+    match /noteBookmarks/{bookmarkId} {
+      allow get: if isValidId(bookmarkId) && isVerifiedUser() && (resource == null || existing().userId == request.auth.uid);
+      allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(bookmarkId) &&
+        isValidNoteBookmark(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().userId == request.auth.uid &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId)) &&
+        exists(/databases/$(database)/documents/notes/$(incoming().noteId)) &&
+        (
+          get(/databases/$(database)/documents/notes/$(incoming().noteId)).data.published == true ||
+          isAdmin()
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(bookmarkId) &&
+        isValidNoteBookmark(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().noteId == existing().noteId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['createdAt']) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(bookmarkId) && isVerifiedUser() && resource != null && existing().userId == request.auth.uid;
     }
   }
 }

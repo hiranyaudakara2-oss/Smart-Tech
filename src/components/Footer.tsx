@@ -108,8 +108,28 @@ export function Footer() {
           </div>
         </div>
 
-        <div className="mt-10 flex flex-col items-start justify-between gap-4 border-t border-slate-800/70 pt-6 text-xs text-slate-500 sm:flex-row sm:items-center">
-          <p>© {new Date().getFullYear()} Smart Tech. All rights reserved.</p>
+        <div className="mt-10 border-t border-slate-800/70 pt-6">
+          <p className="max-w-5xl text-xs leading-relaxed text-slate-400">
+            <strong className="font-semibold text-slate-200">Copyright Disclaimer:</strong>{' '}
+            This website is an independent educational platform. All past papers, model papers, and
+            official government documents hosted here are the sole property and copyright of the
+            Department of Examinations, Sri Lanka. We do not claim any ownership of these materials.
+            They are provided entirely free of charge to assist students in their studies. For
+            official information and updates, please visit the official website:{' '}
+            <a
+              href="https://www.doenets.lk"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-cyan-300 underline decoration-cyan-400/40 underline-offset-4 transition-colors hover:text-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-sm"
+            >
+              www.doenets.lk
+            </a>
+            .
+          </p>
+        </div>
+
+        <div className="mt-6 flex flex-col items-start justify-between gap-4 border-t border-slate-800/70 pt-6 text-xs text-slate-400 sm:flex-row sm:items-center">
+          <p>© {new Date().getFullYear()} Smart Tech. Independent Educational Platform.</p>
           <p>Standard Time Zone: Asia/Colombo (UTC+05:30)</p>
         </div>
       </div>

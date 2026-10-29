@@ -1,6 +1,6 @@
 # Smart Tech Platform — Firestore Security Specification (Phase 0 TDD)
 
-## 1. Data Invariants (All 16 Blueprint Collections)
+## 1. Data Invariants (All 17 Blueprint Collections)
 
 1. **Default-Deny Catch-All**: `match /{document=**} { allow read, write: if false; }` is the first block in `firestore.rules`.
 2. **Identity & Privilege Escalation Guard (`/users`, `/admins`)**:
@@ -25,10 +25,14 @@
    - Student attempts start with `status: 'in_progress'` and zeroed score fields.
    - Once an attempt transitions from `'in_progress'` to `'graded'` or `'pending_review'`, student updates are permanently locked (`existing().status == 'in_progress'` fails); only verified administrators (`isAdmin()`) may adjust marks or publish results.
 8. **Cost-Optimized List Enforcement**:
-   - Zero `get()` or `exists()` lookups appear inside any `allow list:` expression across all 16 collections.
+   - Zero `get()` or `exists()` lookups appear inside any `allow list:` expression across all 17 collections.
 9. **Per-User Announcement Read Receipts (`/announcementReads`)**:
    - Existing read receipts are isolated strictly to `existing().userId == request.auth.uid` (non-existent document probes return empty snapshot without leaking cross-user data).
    - Creation and idempotent re-acknowledgment updates require `isVerifiedUser()`, `isValidId(readId)`, `isValidAnnouncementRead(incoming())`, `incoming().userId == request.auth.uid`, strict server timestamp `incoming().readAt == request.time`, and existence of both `/users/$(incoming().userId)` and `/announcements/$(incoming().announcementId)` on creation; updates strictly lock `userId` and `announcementId` as immutable and restrict `affectedKeys().hasOnly(['readAt'])`.
+10. **Per-User Educational Note Bookmarks (`/noteBookmarks`)**:
+   - Saved "My Library" bookmarks are strictly isolated per authenticated verified user (`existing().userId == request.auth.uid` on `get`, `list`, and `delete`; non-existent document `get` probes return empty snapshots safely).
+   - Creation requires `isVerifiedUser()`, `isValidId(bookmarkId)`, `isValidNoteBookmark(incoming())`, `incoming().userId == request.auth.uid`, `incoming().createdAt == request.time`, `exists(/databases/$(database)/documents/users/$(incoming().userId))`, and `exists(/databases/$(database)/documents/notes/$(incoming().noteId))` with published note check (`published == true || isAdmin()`).
+   - Idempotent updates wrap in `isValidNoteBookmark(incoming())`, lock `userId` and `noteId` as immutable, enforce `incoming().createdAt == request.time`, and restrict `affectedKeys().hasOnly(['createdAt']) || isAdmin()`.
 
 ---
 
@@ -52,6 +56,6 @@
 ## 3. Automated Test Runner
 
 Verified via `src/security/firestore.rules.test.ts` (`npm test`), confirming:
-- Every collection in `firebase-blueprint.json` (all 16 collections) has a matching `match` block in `firestore.rules`.
+- Every collection in `firebase-blueprint.json` (all 17 collections) has a matching `match` block in `firestore.rules`.
 - Zero `get()` or `exists()` calls exist inside `allow list:` rules.
-- All Dirty Dozen payloads evaluate to `PERMISSION_DENIED`.
+- All Dirty Dozen payloads and `noteBookmarks` cross-user/ghost-field/timestamp-forgery payloads evaluate to `PERMISSION_DENIED`.
